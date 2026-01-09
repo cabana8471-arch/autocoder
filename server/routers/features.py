@@ -13,6 +13,8 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 
 from ..schemas import (
+    FeatureBulkCreate,
+    FeatureBulkCreateResponse,
     FeatureCreate,
     FeatureListResponse,
     FeatureResponse,
@@ -295,3 +297,83 @@ async def skip_feature(project_name: str, feature_id: int):
     except Exception:
         logger.exception("Failed to skip feature")
         raise HTTPException(status_code=500, detail="Failed to skip feature")
+
+
+@router.post("/bulk", response_model=FeatureBulkCreateResponse)
+async def create_features_bulk(project_name: str, bulk: FeatureBulkCreate):
+    """
+    Create multiple features at once.
+
+    Features are assigned sequential priorities starting from:
+    - starting_priority if specified
+    - max(existing priorities) + 1 if not specified
+
+    This is useful for:
+    - Expanding a project with new features via AI
+    - Importing features from external sources
+    - Batch operations
+
+    Returns:
+        {"created": N, "features": [...]}
+    """
+    project_name = validate_project_name(project_name)
+    project_dir = _get_project_path(project_name)
+
+    if not project_dir:
+        raise HTTPException(status_code=404, detail=f"Project '{project_name}' not found in registry")
+
+    if not project_dir.exists():
+        raise HTTPException(status_code=404, detail="Project directory not found")
+
+    if not bulk.features:
+        return FeatureBulkCreateResponse(created=0, features=[])
+
+    _, Feature = _get_db_classes()
+
+    try:
+        with get_db_session(project_dir) as session:
+            # Determine starting priority
+            if bulk.starting_priority is not None:
+                current_priority = bulk.starting_priority
+            else:
+                max_priority_feature = session.query(Feature).order_by(Feature.priority.desc()).first()
+                current_priority = (max_priority_feature.priority + 1) if max_priority_feature else 1
+
+            created_features = []
+
+            for feature_data in bulk.features:
+                db_feature = Feature(
+                    priority=current_priority,
+                    category=feature_data.category,
+                    name=feature_data.name,
+                    description=feature_data.description,
+                    steps=feature_data.steps,
+                    passes=False,
+                )
+                session.add(db_feature)
+                current_priority += 1
+
+            session.commit()
+
+            # Refresh to get IDs and return responses
+            for db_feature in session.query(Feature).order_by(Feature.priority.desc()).limit(len(bulk.features)).all():
+                created_features.insert(0, feature_to_response(db_feature))
+
+            # Re-query to get the actual created features in order
+            created_features = []
+            start_priority = current_priority - len(bulk.features)
+            for db_feature in session.query(Feature).filter(
+                Feature.priority >= start_priority,
+                Feature.priority < current_priority
+            ).order_by(Feature.priority).all():
+                created_features.append(feature_to_response(db_feature))
+
+            return FeatureBulkCreateResponse(
+                created=len(created_features),
+                features=created_features
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to bulk create features")
+        raise HTTPException(status_code=500, detail="Failed to bulk create features")

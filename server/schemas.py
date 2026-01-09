@@ -96,6 +96,18 @@ class FeatureListResponse(BaseModel):
     done: list[FeatureResponse]
 
 
+class FeatureBulkCreate(BaseModel):
+    """Request schema for bulk creating features."""
+    features: list[FeatureCreate]
+    starting_priority: int | None = None  # If None, appends after max priority
+
+
+class FeatureBulkCreateResponse(BaseModel):
+    """Response for bulk feature creation."""
+    created: int
+    features: list[FeatureResponse]
+
+
 # ============================================================================
 # Agent Schemas
 # ============================================================================
