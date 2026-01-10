@@ -116,7 +116,7 @@ function App() {
       if (e.key === 'Escape') {
         if (showExpandProject) {
           setShowExpandProject(false)
-        if (showSettings) {
+        } else if (showSettings) {
           setShowSettings(false)
         } else if (assistantOpen) {
           setAssistantOpen(false)
@@ -174,10 +174,9 @@ function App() {
                   <button
                     onClick={() => setShowAddFeature(true)}
                     className="neo-btn neo-btn-primary text-sm"
-                    title="Press N"
+                    title="Add new feature"
                   >
                     <Plus size={18} />
-                    Add Feature
                     <kbd className="ml-1.5 px-1.5 py-0.5 text-xs bg-black/20 rounded font-mono">
                       N
                     </kbd>
@@ -188,10 +187,9 @@ function App() {
                     <button
                       onClick={() => setShowExpandProject(true)}
                       className="neo-btn bg-[var(--color-neo-progress)] text-black text-sm"
-                      title="Add multiple features via AI (Press E)"
+                      title="Expand project with AI"
                     >
                       <Sparkles size={18} />
-                      Expand
                       <kbd className="ml-1.5 px-1.5 py-0.5 text-xs bg-black/20 rounded font-mono">
                         E
                       </kbd>

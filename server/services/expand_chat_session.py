@@ -168,7 +168,7 @@ class ExpandChatSession:
             )
             await self.client.__aenter__()
             self._client_entered = True
-        except Exception as e:
+        except Exception:
             logger.exception("Failed to create Claude client")
             yield {
                 "type": "error",
@@ -182,7 +182,7 @@ class ExpandChatSession:
                 async for chunk in self._query_claude("Begin the project expansion process."):
                     yield chunk
             yield {"type": "response_done"}
-        except Exception as e:
+        except Exception:
             logger.exception("Failed to start expand chat")
             yield {
                 "type": "error",
@@ -229,7 +229,7 @@ class ExpandChatSession:
                 async for chunk in self._query_claude(user_message, attachments):
                     yield chunk
             yield {"type": "response_done"}
-        except Exception as e:
+        except Exception:
             logger.exception("Error during Claude query")
             yield {
                 "type": "error",
@@ -332,7 +332,7 @@ class ExpandChatSession:
                         }
 
                         logger.info(f"Created {len(created)} features for {self.project_name}")
-                except Exception as e:
+                except Exception:
                     logger.exception("Failed to create features")
                     yield {
                         "type": "error",

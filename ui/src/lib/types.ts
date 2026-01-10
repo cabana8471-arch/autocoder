@@ -329,6 +329,9 @@ export interface FeatureBulkCreate {
 export interface FeatureBulkCreateResponse {
   created: number
   features: Feature[]
+}
+
+// ============================================================================
 // Settings Types
 // ============================================================================
 

@@ -238,7 +238,7 @@ async def expand_project_websocket(websocket: WebSocket, project_name: str):
     except WebSocketDisconnect:
         logger.info(f"Expand chat WebSocket disconnected for {project_name}")
 
-    except Exception as e:
+    except Exception:
         logger.exception(f"Expand chat WebSocket error for {project_name}")
         try:
             await websocket.send_json({
