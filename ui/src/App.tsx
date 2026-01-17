@@ -125,6 +125,17 @@ function App() {
     }
   }, [])
 
+  // Handle graph node click - memoized to prevent DependencyGraph re-renders
+  const handleGraphNodeClick = useCallback((nodeId: number) => {
+    const allFeatures = [
+      ...(features?.pending ?? []),
+      ...(features?.in_progress ?? []),
+      ...(features?.done ?? [])
+    ]
+    const feature = allFeatures.find(f => f.id === nodeId)
+    if (feature) setSelectedFeature(feature)
+  }, [features])
+
   // Validate stored project exists (clear if project was deleted)
   useEffect(() => {
     if (selectedProject && projects && !projects.some(p => p.name === selectedProject)) {
@@ -386,16 +397,7 @@ function App() {
                 {graphData ? (
                   <DependencyGraph
                     graphData={graphData}
-                    onNodeClick={(nodeId) => {
-                      // Find the feature and open the modal
-                      const allFeatures = [
-                        ...(features?.pending ?? []),
-                        ...(features?.in_progress ?? []),
-                        ...(features?.done ?? [])
-                      ]
-                      const feature = allFeatures.find(f => f.id === nodeId)
-                      if (feature) setSelectedFeature(feature)
-                    }}
+                    onNodeClick={handleGraphNodeClick}
                   />
                 ) : (
                   <div className="h-full flex items-center justify-center">

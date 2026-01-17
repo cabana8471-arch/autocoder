@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Component, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { ErrorInfo, ReactNode } from 'react'
 import {
   ReactFlow,
   Background,
@@ -14,7 +15,7 @@ import {
   Handle,
 } from '@xyflow/react'
 import dagre from 'dagre'
-import { CheckCircle2, Circle, Loader2, AlertTriangle } from 'lucide-react'
+import { CheckCircle2, Circle, Loader2, AlertTriangle, RefreshCw } from 'lucide-react'
 import type { DependencyGraph as DependencyGraphData, GraphNode } from '../lib/types'
 import '@xyflow/react/dist/style.css'
 
@@ -25,6 +26,62 @@ const NODE_HEIGHT = 80
 interface DependencyGraphProps {
   graphData: DependencyGraphData
   onNodeClick?: (nodeId: number) => void
+}
+
+// Error boundary to catch and recover from ReactFlow rendering errors
+interface ErrorBoundaryProps {
+  children: ReactNode
+  onReset?: () => void
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean
+  error: Error | null
+}
+
+class GraphErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  constructor(props: ErrorBoundaryProps) {
+    super(props)
+    this.state = { hasError: false, error: null }
+  }
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, error }
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    console.error('DependencyGraph error:', error, errorInfo)
+  }
+
+  handleReset = () => {
+    this.setState({ hasError: false, error: null })
+    this.props.onReset?.()
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="h-full w-full flex items-center justify-center bg-neo-neutral-100">
+          <div className="text-center p-6">
+            <AlertTriangle size={48} className="mx-auto mb-4 text-neo-warning" />
+            <div className="text-neo-text font-bold mb-2">Graph rendering error</div>
+            <div className="text-sm text-neo-text-secondary mb-4">
+              The dependency graph encountered an issue.
+            </div>
+            <button
+              onClick={this.handleReset}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-neo-accent text-white rounded border-2 border-neo-border shadow-neo-sm hover:shadow-neo-md transition-all"
+            >
+              <RefreshCw size={16} />
+              Reload Graph
+            </button>
+          </div>
+        </div>
+      )
+    }
+
+    return this.props.children
+  }
 }
 
 // Custom node component
@@ -127,10 +184,22 @@ function getLayoutedElements(
   return { nodes: layoutedNodes, edges }
 }
 
-export function DependencyGraph({ graphData, onNodeClick }: DependencyGraphProps) {
+function DependencyGraphInner({ graphData, onNodeClick }: DependencyGraphProps) {
   const [direction, setDirection] = useState<'TB' | 'LR'>('LR')
 
+  // Use ref for callback to avoid triggering re-renders when callback identity changes
+  const onNodeClickRef = useRef(onNodeClick)
+  useEffect(() => {
+    onNodeClickRef.current = onNodeClick
+  }, [onNodeClick])
+
+  // Create a stable click handler that uses the ref
+  const handleNodeClick = useCallback((nodeId: number) => {
+    onNodeClickRef.current?.(nodeId)
+  }, [])
+
   // Convert graph data to React Flow format
+  // Only recalculate when graphData or direction changes (not when onNodeClick changes)
   const initialElements = useMemo(() => {
     const nodes: Node[] = graphData.nodes.map((node) => ({
       id: String(node.id),
@@ -138,7 +207,7 @@ export function DependencyGraph({ graphData, onNodeClick }: DependencyGraphProps
       position: { x: 0, y: 0 },
       data: {
         ...node,
-        onClick: () => onNodeClick?.(node.id),
+        onClick: () => handleNodeClick(node.id),
       },
     }))
 
@@ -156,20 +225,36 @@ export function DependencyGraph({ graphData, onNodeClick }: DependencyGraphProps
     }))
 
     return getLayoutedElements(nodes, edges, direction)
-  }, [graphData, direction, onNodeClick])
+  }, [graphData, direction, handleNodeClick])
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialElements.nodes)
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialElements.edges)
 
-  // Update layout when data or direction changes
+  // Update layout when initialElements changes
+  // Using a ref to track previous graph data to avoid unnecessary updates
+  const prevGraphDataRef = useRef<string>('')
+  const prevDirectionRef = useRef<'TB' | 'LR'>(direction)
+
   useEffect(() => {
-    const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(
-      initialElements.nodes,
-      initialElements.edges,
-      direction
-    )
-    setNodes(layoutedNodes)
-    setEdges(layoutedEdges)
+    // Create a simple hash of the graph data to detect actual changes
+    const graphHash = JSON.stringify({
+      nodes: graphData.nodes.map(n => ({ id: n.id, status: n.status })),
+      edges: graphData.edges,
+    })
+
+    // Only update if graph data or direction actually changed
+    if (graphHash !== prevGraphDataRef.current || direction !== prevDirectionRef.current) {
+      prevGraphDataRef.current = graphHash
+      prevDirectionRef.current = direction
+
+      const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(
+        initialElements.nodes,
+        initialElements.edges,
+        direction
+      )
+      setNodes(layoutedNodes)
+      setEdges(layoutedEdges)
+    }
   }, [graphData, direction, setNodes, setEdges, initialElements])
 
   const onLayout = useCallback(
@@ -285,5 +370,22 @@ export function DependencyGraph({ graphData, onNodeClick }: DependencyGraphProps
         />
       </ReactFlow>
     </div>
+  )
+}
+
+// Wrapper component with error boundary for stability
+export function DependencyGraph({ graphData, onNodeClick }: DependencyGraphProps) {
+  // Use a key based on graph data length to force remount on structural changes
+  // This helps recover from corrupted ReactFlow state
+  const [resetKey, setResetKey] = useState(0)
+
+  const handleReset = useCallback(() => {
+    setResetKey(k => k + 1)
+  }, [])
+
+  return (
+    <GraphErrorBoundary key={resetKey} onReset={handleReset}>
+      <DependencyGraphInner graphData={graphData} onNodeClick={onNodeClick} />
+    </GraphErrorBoundary>
   )
 }
