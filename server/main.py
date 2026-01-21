@@ -26,6 +26,7 @@ from .routers import (
     assistant_chat_router,
     cicd_router,
     devserver_router,
+    documentation_router,
     expand_project_router,
     features_router,
     filesystem_router,
@@ -131,6 +132,7 @@ app.include_router(git_workflow_router)
 app.include_router(cicd_router)
 app.include_router(templates_router)
 app.include_router(review_router)
+app.include_router(documentation_router)
 
 
 # ============================================================================
