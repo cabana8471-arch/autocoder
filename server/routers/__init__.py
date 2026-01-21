@@ -16,6 +16,7 @@ from .settings import router as settings_router
 from .spec_creation import router as spec_creation_router
 from .terminal import router as terminal_router
 from .import_project import router as import_project_router
+from .logs import router as logs_router
 
 __all__ = [
     "projects_router",
@@ -29,4 +30,5 @@ __all__ = [
     "settings_router",
     "terminal_router",
     "import_project_router",
+    "logs_router",
 ]
