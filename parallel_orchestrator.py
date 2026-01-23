@@ -542,22 +542,45 @@ class ParallelOrchestrator:
         # Mark as in_progress in database (or verify it's resumable)
         session = self.get_session()
         try:
-            feature = session.query(Feature).filter(Feature.id == feature_id).first()
-            if not feature:
-                return False, "Feature not found"
-            if feature.passes:
-                return False, "Feature already complete"
-
             if resume:
-                # Resuming: feature should already be in_progress
+                # Resuming: verify feature is already in_progress
+                feature = session.query(Feature).filter(Feature.id == feature_id).first()
+                if not feature:
+                    return False, "Feature not found"
                 if not feature.in_progress:
                     return False, "Feature not in progress, cannot resume"
+                if feature.passes:
+                    return False, "Feature already complete"
             else:
-                # Starting fresh: feature should not be in_progress
-                if feature.in_progress:
-                    return False, "Feature already in progress"
-                feature.in_progress = True
+                # Starting fresh: atomic claim using UPDATE-WHERE pattern (same as testing agent)
+                # This prevents race conditions where multiple agents try to claim the same feature
+                from sqlalchemy import text
+                result = session.execute(
+                    text("""
+                        UPDATE features
+                        SET in_progress = 1
+                        WHERE id = :feature_id
+                          AND passes = 0
+                          AND in_progress = 0
+                    """),
+                    {"feature_id": feature_id}
+                )
                 session.commit()
+
+                if result.rowcount == 0:
+                    # Atomic claim failed - another agent claimed it or feature is already complete
+                    # Query to determine exact reason for better error messages
+                    feature = session.query(Feature).filter(Feature.id == feature_id).first()
+                    if not feature:
+                        return False, "Feature not found"
+                    if feature.passes:
+                        return False, "Feature already complete"
+                    if feature.in_progress:
+                        return False, "Feature already claimed by another agent"
+                    # Edge case: feature exists but conditions changed between check and update
+                    return False, "Feature state changed, unable to claim"
+
+                debug_log.log("CLAIM", f"Successfully claimed feature #{feature_id} atomically")
         finally:
             session.close()
 
@@ -1115,6 +1138,12 @@ class ParallelOrchestrator:
                     continue
 
                 # Priority 2: Start new ready features
+                # CRITICAL: Dispose engine to force fresh database reads
+                # Coding agents run as subprocesses and commit changes (passes=True, in_progress=False).
+                # SQLAlchemy connection pool may cache stale connections. Disposing ensures we see
+                # all subprocess commits when checking dependencies.
+                debug_log.log("DB", "Disposing engine before get_ready_features()")
+                self._engine.dispose()
                 ready = self.get_ready_features()
                 if not ready:
                     # Wait for running features to complete
@@ -1153,22 +1182,34 @@ class ParallelOrchestrator:
                     slots_available=slots,
                     features_to_start=[f['id'] for f in features_to_start])
 
+                # Atomic UPDATE-WHERE in start_feature() provides database-level protection
+                # against race conditions. Continue to next feature if claiming fails.
+                claimed_count = 0
                 for i, feature in enumerate(features_to_start):
-                    print(f"[DEBUG] Starting feature {i+1}/{len(features_to_start)}: #{feature['id']} - {feature['name']}", flush=True)
+                    print(f"[DEBUG] Attempting to claim feature #{feature['id']} ({i+1}/{len(features_to_start)})...", flush=True)
                     success, msg = self.start_feature(feature["id"])
+
                     if not success:
-                        print(f"[DEBUG] Failed to start feature #{feature['id']}: {msg}", flush=True)
-                        debug_log.log("SPAWN", f"FAILED to start feature #{feature['id']}",
+                        print(f"[DEBUG] Failed to claim feature #{feature['id']}: {msg}", flush=True)
+                        debug_log.log("SPAWN", f"Failed to claim feature #{feature['id']}",
                             feature_name=feature['name'],
-                            error=msg)
-                    else:
-                        print(f"[DEBUG] Successfully started feature #{feature['id']}", flush=True)
-                        with self._lock:
-                            running_count = len(self.running_coding_agents)
-                            print(f"[DEBUG] Running coding agents after start: {running_count}", flush=True)
-                        debug_log.log("SPAWN", f"Successfully started feature #{feature['id']}",
-                            feature_name=feature['name'],
-                            running_coding_agents=running_count)
+                            error=msg,
+                            retry_strategy="continue_to_next")
+                        # Continue to next feature instead of stopping
+                        # This handles race conditions where another agent claimed it first
+                        continue
+
+                    claimed_count += 1
+                    print(f"[DEBUG] Successfully claimed feature #{feature['id']}", flush=True)
+                    with self._lock:
+                        running_count = len(self.running_coding_agents)
+                        print(f"[DEBUG] Running coding agents after start: {running_count}", flush=True)
+                    debug_log.log("SPAWN", f"Successfully claimed feature #{feature['id']}",
+                        feature_name=feature['name'],
+                        running_coding_agents=running_count)
+
+                if claimed_count < len(features_to_start):
+                    print(f"[DEBUG] Claimed {claimed_count}/{len(features_to_start)} features (some already claimed)", flush=True)
 
                 await asyncio.sleep(2)  # Brief pause between starts
 
@@ -1227,6 +1268,32 @@ async def run_parallel_orchestrator(
         yolo_mode=yolo_mode,
         testing_agent_ratio=testing_agent_ratio,
     )
+
+    # Clear any stuck features from previous interrupted sessions
+    # This is the RIGHT place to clear - BEFORE spawning any agents
+    # Agents will NO LONGER clear features on their individual startups (see agent.py fix)
+    try:
+        session = orchestrator.get_session()
+        cleared_count = 0
+
+        # Get all features marked in_progress
+        from api.database import Feature
+        stuck_features = session.query(Feature).filter(
+            Feature.in_progress == True
+        ).all()
+
+        for feature in stuck_features:
+            feature.in_progress = False
+            cleared_count += 1
+
+        session.commit()
+        session.close()
+
+        if cleared_count > 0:
+            print(f"[ORCHESTRATOR] Cleared {cleared_count} stuck features from previous session", flush=True)
+
+    except Exception as e:
+        print(f"[ORCHESTRATOR] Warning: Failed to clear stuck features: {e}", flush=True)
 
     try:
         await orchestrator.run_loop()

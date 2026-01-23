@@ -157,9 +157,27 @@ async def run_autonomous_agent(
     # Create project directory
     project_dir.mkdir(parents=True, exist_ok=True)
 
-    # Auto-recovery: Clear stuck features from previous interrupted sessions
-    # This prevents features from being orphaned when agents are stopped mid-work
-    clear_stuck_features(project_dir)
+    # IMPORTANT: Do NOT clear stuck features in parallel mode!
+    # The orchestrator manages feature claiming atomically.
+    # Clearing here causes race conditions where features are marked in_progress
+    # by the orchestrator but immediately cleared by the agent subprocess on startup.
+    #
+    # For single-agent mode or manual runs, clearing is still safe because
+    # there's only one agent at a time and it happens before claiming any features.
+    #
+    # Only clear if we're NOT in a parallel orchestrator context
+    # (detected by checking if this agent is a subprocess spawned by orchestrator)
+    import psutil
+    try:
+        parent_process = psutil.Process().parent()
+        parent_name = parent_process.name() if parent_process else ""
+
+        # Only clear if parent is NOT python (i.e., we're running manually, not from orchestrator)
+        if "python" not in parent_name.lower():
+            clear_stuck_features(project_dir)
+    except Exception:
+        # If parent process check fails, err on the safe side and clear
+        clear_stuck_features(project_dir)
 
     # Determine agent type if not explicitly set
     if agent_type is None:
