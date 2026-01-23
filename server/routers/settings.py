@@ -14,6 +14,10 @@ from fastapi import APIRouter
 
 from ..schemas import ModelInfo, ModelsResponse, SettingsResponse, SettingsUpdate
 
+# Mimetype fix for Windows
+import mimetypes
+mimetypes.add_type("text/javascript", ".js", True)
+
 # Add root to path for registry import
 ROOT_DIR = Path(__file__).parent.parent.parent
 if str(ROOT_DIR) not in sys.path:
