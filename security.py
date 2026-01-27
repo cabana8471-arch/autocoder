@@ -109,7 +109,7 @@ DANGEROUS_COMMANDS = {
     "az",
     # Container and orchestration
     "kubectl",
-    "docker-compose",
+    # Note: docker-compose removed - commonly needed for local dev environments
 }
 
 
