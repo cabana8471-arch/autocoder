@@ -254,21 +254,20 @@ def clear_stuck_features(project_dir: Path) -> int:
         return 0
 
     try:
-        conn = sqlite3.connect(db_file)
-        cursor = conn.cursor()
+        with closing(_get_connection(db_file)) as conn:
+            cursor = conn.cursor()
 
-        # Count how many will be cleared
-        cursor.execute("SELECT COUNT(*) FROM features WHERE in_progress = 1")
-        count = cursor.fetchone()[0]
+            # Count how many will be cleared
+            cursor.execute("SELECT COUNT(*) FROM features WHERE in_progress = 1")
+            count = cursor.fetchone()[0]
 
-        if count > 0:
-            # Clear all in_progress flags
-            cursor.execute("UPDATE features SET in_progress = 0 WHERE in_progress = 1")
-            conn.commit()
-            print(f"[Auto-recovery] Cleared {count} stuck feature(s) from previous session")
+            if count > 0:
+                # Clear all in_progress flags
+                cursor.execute("UPDATE features SET in_progress = 0 WHERE in_progress = 1")
+                conn.commit()
+                print(f"[Auto-recovery] Cleared {count} stuck feature(s) from previous session")
 
-        conn.close()
-        return count
+            return count
     except sqlite3.OperationalError:
         # Table doesn't exist or doesn't have in_progress column
         return 0

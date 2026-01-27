@@ -41,7 +41,7 @@ from sqlalchemy import text
 # Add parent directory to path so we can import from api module
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from api.database import Feature, atomic_transaction, create_database
+from api.database import atomic_transaction, create_database, Feature
 from api.dependency_resolver import (
     MAX_DEPENDENCIES_PER_FEATURE,
     compute_scheduling_scores,
@@ -286,6 +286,29 @@ def feature_mark_passing(
         JSON with success confirmation: {success, feature_id, name, quality_result}
         If strict mode is enabled and quality checks fail, returns an error.
     """
+    # Run quality checks BEFORE opening DB session to avoid holding locks
+    config = load_quality_config(PROJECT_DIR)
+    quality_result = None
+
+    if config.get("enabled", True):
+        checks_config = config.get("checks", {})
+        quality_result = verify_quality(
+            PROJECT_DIR,
+            run_lint=checks_config.get("lint", True),
+            run_type_check=checks_config.get("type_check", True),
+            run_custom=True,
+            custom_script_path=checks_config.get("custom_script"),
+        )
+
+        # In strict mode, block if quality checks failed
+        if config.get("strict_mode", True) and not quality_result["passed"]:
+            return json.dumps({
+                "error": "Quality checks failed - cannot mark feature as passing",
+                "quality_result": quality_result,
+                "hint": "Fix the issues and try again, or disable strict_mode in .autocoder/config.json"
+            })
+
+    # Now open DB session for the atomic update
     session = get_session()
     try:
         # First get the feature name for the response
@@ -294,28 +317,6 @@ def feature_mark_passing(
             return json.dumps({"error": f"Feature with ID {feature_id} not found"})
 
         name = feature.name
-
-        # Run quality checks
-        config = load_quality_config(PROJECT_DIR)
-        quality_result = None
-
-        if config.get("enabled", True):
-            checks_config = config.get("checks", {})
-            quality_result = verify_quality(
-                PROJECT_DIR,
-                run_lint=checks_config.get("lint", True),
-                run_type_check=checks_config.get("type_check", True),
-                run_custom=True,
-                custom_script_path=checks_config.get("custom_script"),
-            )
-
-            # In strict mode, block if quality checks failed
-            if config.get("strict_mode", True) and not quality_result["passed"]:
-                return json.dumps({
-                    "error": "Quality checks failed - cannot mark feature as passing",
-                    "quality_result": quality_result,
-                    "hint": "Fix the issues and try again, or disable strict_mode in .autocoder/config.json"
-                })
 
         # Atomic update - prevents race conditions in parallel mode
         session.execute(text("""
