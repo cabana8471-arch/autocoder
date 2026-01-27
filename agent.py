@@ -17,6 +17,8 @@ from zoneinfo import ZoneInfo
 
 from claude_agent_sdk import ClaudeSDKClient
 
+from structured_logging import get_logger
+
 # Fix Windows console encoding for Unicode characters (emoji, etc.)
 # Without this, print() crashes when Claude outputs emoji like ✅
 if sys.platform == "win32":
@@ -347,6 +349,7 @@ async def run_autonomous_agent(
             response_lower = response.lower()
             if any(pattern in response_lower for pattern in RATE_LIMIT_PATTERNS):
                 print("Claude Agent SDK indicated rate limit reached.")
+                logger.warn("Rate limit signal in response")
                 reset_rate_limit_retries = False
 
                 # Try to extract retry-after from response text first
