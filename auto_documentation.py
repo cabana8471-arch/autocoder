@@ -24,7 +24,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -71,7 +71,7 @@ class ProjectDocs:
 
     def __post_init__(self):
         if not self.generated_at:
-            self.generated_at = datetime.utcnow().isoformat() + "Z"
+            self.generated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 class DocumentationGenerator:

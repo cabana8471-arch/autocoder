@@ -142,7 +142,7 @@ async def run_agent_session(
             # Try to extract retry-after time from error
             retry_seconds = parse_retry_after(error_str)
             if logger:
-                logger.warn("Rate limit detected", retry_seconds=retry_seconds)
+                logger.warning("Rate limit detected", retry_seconds=retry_seconds)
             if retry_seconds is not None:
                 return "rate_limit", str(retry_seconds)
             else:
@@ -232,8 +232,9 @@ async def run_autonomous_agent(
         if "python" not in parent_name.lower():
             clear_stuck_features(project_dir)
     except Exception:
-        # If parent process check fails, err on the safe side and clear
-        clear_stuck_features(project_dir)
+        # If parent process check fails, do NOT clear features to avoid race conditions
+        # in parallel mode. The orchestrator handles clearing stuck features safely.
+        pass
 
     # Determine agent type if not explicitly set
     if agent_type is None:
@@ -348,19 +349,19 @@ async def run_autonomous_agent(
             response_lower = response.lower()
             if any(pattern in response_lower for pattern in RATE_LIMIT_PATTERNS):
                 print("Claude Agent SDK indicated rate limit reached.")
-                logger.warn("Rate limit signal in response")
+                logger.warning("Rate limit signal in response")
                 reset_rate_limit_retries = False
 
                 # Try to extract retry-after from response text first
                 retry_seconds = parse_retry_after(response)
                 if retry_seconds is not None:
                     delay_seconds = retry_seconds
-                    logger.warn("Rate limit signal in response", delay_seconds=delay_seconds, source="retry-after")
+                    logger.warning("Rate limit signal in response", delay_seconds=delay_seconds, source="retry-after")
                 else:
                     # Use exponential backoff when retry-after unknown
                     delay_seconds = min(60 * (2 ** rate_limit_retries), 3600)
                     rate_limit_retries += 1
-                    logger.warn("Rate limit signal in response", delay_seconds=delay_seconds, source="exponential-backoff", attempt=rate_limit_retries)
+                    logger.warning("Rate limit signal in response", delay_seconds=delay_seconds, source="exponential-backoff", attempt=rate_limit_retries)
 
                 # Try to parse reset time from response (more specific format)
                 match = re.search(
@@ -441,13 +442,13 @@ async def run_autonomous_agent(
             if response != "unknown":
                 delay_seconds = int(response)
                 print(f"\nRate limit hit. Waiting {delay_seconds} seconds before retry...")
-                logger.warn("Rate limit backoff", delay_seconds=delay_seconds, source="known")
+                logger.warning("Rate limit backoff", delay_seconds=delay_seconds, source="known")
             else:
                 # Use exponential backoff when retry-after unknown
                 delay_seconds = min(60 * (2 ** rate_limit_retries), 3600)  # Max 1 hour
                 rate_limit_retries += 1
                 print(f"\nRate limit hit. Backoff wait: {delay_seconds} seconds (attempt #{rate_limit_retries})...")
-                logger.warn("Rate limit backoff", delay_seconds=delay_seconds, source="exponential", attempt=rate_limit_retries)
+                logger.warning("Rate limit backoff", delay_seconds=delay_seconds, source="exponential", attempt=rate_limit_retries)
 
             await asyncio.sleep(delay_seconds)
 
@@ -460,10 +461,10 @@ async def run_autonomous_agent(
             logger.error("Session error, retrying", attempt=error_retries, delay_seconds=delay_seconds)
             await asyncio.sleep(delay_seconds)
 
-        # Small delay between sessions
+        # Small delay between sessions (3 seconds as per CLAUDE.md doc)
         if max_iterations is None or iteration < max_iterations:
             print("\nPreparing next session...\n")
-            await asyncio.sleep(1)
+            await asyncio.sleep(3)
 
     # Final summary
     passing, in_progress, total = count_passing_tests(project_dir)

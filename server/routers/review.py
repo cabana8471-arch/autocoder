@@ -229,15 +229,15 @@ async def get_report(project_name: str, filename: str):
     """
     Get a specific review report.
     """
+    # Validate filename FIRST to prevent path traversal
+    if ".." in filename or "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
     project_dir = get_project_dir(project_name)
     report_path = project_dir / ".autocoder" / "review-reports" / filename
 
     if not report_path.exists():
         raise HTTPException(status_code=404, detail=f"Report not found: {filename}")
-
-    # Validate filename to prevent path traversal
-    if ".." in filename or "/" in filename or "\\" in filename:
-        raise HTTPException(status_code=400, detail="Invalid filename")
 
     try:
         with open(report_path) as f:

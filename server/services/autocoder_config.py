@@ -14,6 +14,7 @@ Extends the basic project_config.py with support for:
 Configuration is stored in {project_dir}/.autocoder/config.json.
 """
 
+import copy
 import json
 import logging
 from pathlib import Path
@@ -225,7 +226,7 @@ def load_autocoder_config(project_dir: Path) -> AutocoderConfig:
 
     if not config_path.exists():
         logger.debug("No config file found at %s, using defaults", config_path)
-        return DEFAULT_CONFIG.copy()
+        return copy.deepcopy(DEFAULT_CONFIG)
 
     try:
         with open(config_path, "r", encoding="utf-8") as f:
@@ -236,7 +237,7 @@ def load_autocoder_config(project_dir: Path) -> AutocoderConfig:
                 "Invalid config format in %s: expected dict, got %s",
                 config_path, type(user_config).__name__
             )
-            return DEFAULT_CONFIG.copy()
+            return copy.deepcopy(DEFAULT_CONFIG)
 
         # Merge user config with defaults
         merged = _deep_merge(DEFAULT_CONFIG, user_config)
@@ -244,10 +245,10 @@ def load_autocoder_config(project_dir: Path) -> AutocoderConfig:
 
     except json.JSONDecodeError as e:
         logger.warning("Failed to parse config at %s: %s", config_path, e)
-        return DEFAULT_CONFIG.copy()
+        return copy.deepcopy(DEFAULT_CONFIG)
     except OSError as e:
         logger.warning("Failed to read config at %s: %s", config_path, e)
-        return DEFAULT_CONFIG.copy()
+        return copy.deepcopy(DEFAULT_CONFIG)
 
 
 def save_autocoder_config(project_dir: Path, config: AutocoderConfig) -> None:

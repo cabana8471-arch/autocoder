@@ -12,7 +12,7 @@ Endpoints:
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -147,7 +147,7 @@ async def query_logs(
 
         since = None
         if since_hours:
-            since = datetime.utcnow() - timedelta(hours=since_hours)
+            since = datetime.now(timezone.utc) - timedelta(hours=since_hours)
 
         logs = query.query(
             level=level,
@@ -194,7 +194,7 @@ async def get_timeline(
 
         query = get_log_query(project_dir)
 
-        since = datetime.utcnow() - timedelta(hours=since_hours)
+        since = datetime.now(timezone.utc) - timedelta(hours=since_hours)
         buckets = query.get_timeline(since=since, bucket_minutes=bucket_minutes)
 
         return TimelineResponse(
@@ -228,7 +228,7 @@ async def get_stats(
 
         since = None
         if since_hours:
-            since = datetime.utcnow() - timedelta(hours=since_hours)
+            since = datetime.now(timezone.utc) - timedelta(hours=since_hours)
 
         agents = query.get_agent_stats(since=since)
         total = sum(a.get("total", 0) for a in agents)
@@ -261,11 +261,11 @@ async def export_logs(request: ExportRequest):
 
         since = None
         if request.since_hours:
-            since = datetime.utcnow() - timedelta(hours=request.since_hours)
+            since = datetime.now(timezone.utc) - timedelta(hours=request.since_hours)
 
         # Create temp file for export
         suffix = f".{request.format}" if request.format != "jsonl" else ".jsonl"
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         filename = f"logs_{request.project_name}_{timestamp}{suffix}"
 
         # Export to project's .autocoder/exports directory

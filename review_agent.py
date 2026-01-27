@@ -28,7 +28,7 @@ import os
 import re
 import subprocess
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Optional
@@ -207,7 +207,7 @@ class ReviewAgent:
         # Generate report
         return ReviewReport(
             project_dir=str(self.project_dir),
-            review_time=datetime.utcnow().isoformat() + "Z",
+            review_time=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             commits_reviewed=commits or [],
             files_reviewed=[str(f.relative_to(self.project_dir)) for f in files_to_review if f.exists()],
             issues=self.issues,
@@ -526,7 +526,7 @@ class ReviewAgent:
         reports_dir = self.project_dir / ".autocoder" / "review-reports"
         reports_dir.mkdir(parents=True, exist_ok=True)
 
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         report_path = reports_dir / f"review_{timestamp}.json"
 
         with open(report_path, "w") as f:

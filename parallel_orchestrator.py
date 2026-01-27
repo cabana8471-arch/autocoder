@@ -869,7 +869,7 @@ class ParallelOrchestrator:
                 print(f"Feature #{feature_id} has failed {failure_count} times, will not retry", flush=True)
                 debug_log.log("COMPLETE", f"Feature #{feature_id} exceeded max retries",
                     failure_count=failure_count)
-                self._logger.warn("Feature exceeded max retries", feature_id=feature_id, failure_count=failure_count)
+                self._logger.warning("Feature exceeded max retries", feature_id=feature_id, failure_count=failure_count)
 
         status = "completed" if return_code == 0 else "failed"
         if self.on_status:

@@ -21,7 +21,7 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Optional
@@ -366,7 +366,7 @@ class SecurityScanner:
         """
         result = ScanResult(
             project_dir=str(self.project_dir),
-            scan_time=datetime.utcnow().isoformat() + "Z",
+            scan_time=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         )
 
         if scan_dependencies:
@@ -663,7 +663,7 @@ class SecurityScanner:
         reports_dir = self.project_dir / ".autocoder" / "security-reports"
         reports_dir.mkdir(parents=True, exist_ok=True)
 
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         report_path = reports_dir / f"security_scan_{timestamp}.json"
 
         with open(report_path, "w") as f:

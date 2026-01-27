@@ -15,7 +15,7 @@ Supports:
 import json
 import shutil
 import subprocess
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TypedDict
 
@@ -349,7 +349,7 @@ def verify_quality(
 
     return {
         "passed": all_passed,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "checks": checks,
         "summary": summary,
     }

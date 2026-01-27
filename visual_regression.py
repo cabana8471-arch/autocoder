@@ -27,7 +27,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -115,7 +115,7 @@ class TestReport:
 
     def __post_init__(self):
         if not self.test_time:
-            self.test_time = datetime.utcnow().isoformat() + "Z"
+            self.test_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
     def to_dict(self) -> dict:
         return {
@@ -288,7 +288,7 @@ class VisualRegressionTester:
         """
         report = TestReport(
             project_dir=str(self.project_dir),
-            test_time=datetime.utcnow().isoformat() + "Z",
+            test_time=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         )
 
         for viewport in self.viewports:
@@ -362,7 +362,7 @@ class VisualRegressionTester:
         """
         combined_report = TestReport(
             project_dir=str(self.project_dir),
-            test_time=datetime.utcnow().isoformat() + "Z",
+            test_time=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         )
 
         for route in routes:
@@ -385,7 +385,7 @@ class VisualRegressionTester:
         reports_dir = self.snapshots_dir / "reports"
         reports_dir.mkdir(parents=True, exist_ok=True)
 
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         report_path = reports_dir / f"visual_test_{timestamp}.json"
 
         with open(report_path, "w") as f:

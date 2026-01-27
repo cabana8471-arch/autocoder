@@ -8,6 +8,7 @@ Load and manage application templates for quick project scaffolding.
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+from xml.sax.saxutils import escape as xml_escape
 
 import yaml
 
@@ -260,26 +261,26 @@ def generate_app_spec(
     # Merge design tokens with customizations
     colors = {**template.design_tokens.colors, **customizations.get("colors", {})}
 
-    # Build XML
+    # Build XML (escape all user-provided content to prevent XML injection)
     xml_parts = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         "<app_spec>",
-        f"  <name>{app_name}</name>",
-        f"  <description>{template.description}</description>",
+        f"  <name>{xml_escape(app_name)}</name>",
+        f"  <description>{xml_escape(template.description)}</description>",
         "",
         "  <tech_stack>",
     ]
 
     if template.tech_stack.frontend:
-        xml_parts.append(f"    <frontend>{template.tech_stack.frontend}</frontend>")
+        xml_parts.append(f"    <frontend>{xml_escape(template.tech_stack.frontend)}</frontend>")
     if template.tech_stack.backend:
-        xml_parts.append(f"    <backend>{template.tech_stack.backend}</backend>")
+        xml_parts.append(f"    <backend>{xml_escape(template.tech_stack.backend)}</backend>")
     if template.tech_stack.database:
-        xml_parts.append(f"    <database>{template.tech_stack.database}</database>")
+        xml_parts.append(f"    <database>{xml_escape(template.tech_stack.database)}</database>")
     if template.tech_stack.auth:
-        xml_parts.append(f"    <auth>{template.tech_stack.auth}</auth>")
+        xml_parts.append(f"    <auth>{xml_escape(template.tech_stack.auth)}</auth>")
     if template.tech_stack.styling:
-        xml_parts.append(f"    <styling>{template.tech_stack.styling}</styling>")
+        xml_parts.append(f"    <styling>{xml_escape(template.tech_stack.styling)}</styling>")
 
     xml_parts.extend([
         "  </tech_stack>",
@@ -289,7 +290,10 @@ def generate_app_spec(
     ])
 
     for color_name, color_value in colors.items():
-        xml_parts.append(f"      <{color_name}>{color_value}</{color_name}>")
+        # Escape color name (used as tag name) and value
+        safe_name = xml_escape(color_name)
+        safe_value = xml_escape(color_value)
+        xml_parts.append(f"      <{safe_name}>{safe_value}</{safe_name}>")
 
     xml_parts.extend([
         "    </colors>",
@@ -300,9 +304,11 @@ def generate_app_spec(
 
     for category, feature_names in template.feature_categories.items():
         category_title = category.replace("_", " ").title()
-        xml_parts.append(f"    <category name=\"{category_title}\">")
+        # Escape attribute value using quoteattr pattern
+        safe_category = xml_escape(category_title, {'"': '&quot;'})
+        xml_parts.append(f'    <category name="{safe_category}">')
         for feature_name in feature_names:
-            xml_parts.append(f"      <feature>{feature_name}</feature>")
+            xml_parts.append(f"      <feature>{xml_escape(feature_name)}</feature>")
         xml_parts.append("    </category>")
 
     xml_parts.extend([
