@@ -25,14 +25,12 @@ Log Format:
 
 import json
 import logging
-import os
-import re
 import sqlite3
 import threading
-from dataclasses import dataclass, field, asdict
-from datetime import datetime, timedelta
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Optional, Literal
+from typing import Literal, Optional
 
 # Type aliases
 LogLevel = Literal["debug", "info", "warn", "error"]
@@ -101,6 +99,10 @@ class StructuredLogHandler(logging.Handler):
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
 
+            # Enable WAL mode for better concurrency with parallel agents
+            # WAL allows readers and writers to work concurrently without blocking
+            cursor.execute("PRAGMA journal_mode=WAL")
+
             # Create logs table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS logs (
@@ -142,7 +144,7 @@ class StructuredLogHandler(logging.Handler):
         try:
             # Extract structured data from record
             entry = StructuredLogEntry(
-                timestamp=datetime.utcnow().isoformat() + "Z",
+                timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 level=record.levelname.lower(),
                 message=self.format(record),
                 agent_id=getattr(record, "agent_id", self.agent_id),
@@ -218,11 +220,15 @@ class StructuredLogger:
         # Ensure directory exists
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Setup logger
-        self.logger = logging.getLogger(f"autocoder.{agent_id or 'main'}")
+        # Setup logger with unique name per instance to avoid handler accumulation
+        # across tests and multiple invocations. Include project path hash for uniqueness.
+        import hashlib
+        path_hash = hashlib.md5(str(self.project_dir).encode()).hexdigest()[:8]
+        logger_name = f"autocoder.{agent_id or 'main'}.{path_hash}.{id(self)}"
+        self.logger = logging.getLogger(logger_name)
         self.logger.setLevel(logging.DEBUG)
 
-        # Clear existing handlers
+        # Clear existing handlers (for safety, though names should be unique)
         self.logger.handlers.clear()
 
         # Add structured handler
