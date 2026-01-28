@@ -598,8 +598,8 @@
 
 .theme-business {
   --radius: 0.5rem;
-  /* Warm off-white background */
-  --background: oklch(0.9800 0.0040 85);
+  /* Concrete-like blue-gray background */
+  --background: oklch(0.9500 0.0080 265);
   /* Deep navy foreground #000e4e */
   --foreground: oklch(0.1700 0.0900 265);
   /* White cards with shadow depth */
@@ -631,7 +631,7 @@
   --chart-3: oklch(0.5000 0.0400 265);
   --chart-4: oklch(0.6500 0.0200 265);
   --chart-5: oklch(0.8000 0.0100 265);
-  --sidebar: oklch(0.9600 0.0030 85);
+  --sidebar: oklch(0.9300 0.0100 265);
   --sidebar-foreground: oklch(0.1700 0.0900 265);
   --sidebar-primary: oklch(0.1700 0.0900 265);
   --sidebar-primary-foreground: oklch(1.0000 0 0);
