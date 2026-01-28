@@ -143,8 +143,9 @@ async def generate_docs(request: GenerateDocsRequest):
         )
 
     except Exception as e:
-        logger.error(f"Documentation generation failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # Log full exception server-side but don't expose details to client
+        logger.exception(f"Documentation generation failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal error generating documentation")
 
 
 @router.get("/{project_name}", response_model=ListDocsResponse)
@@ -265,8 +266,9 @@ async def preview_readme(request: PreviewRequest):
         )
 
     except Exception as e:
-        logger.error(f"Preview failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # Log full exception server-side but don't expose details to client
+        logger.exception(f"Preview failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal error generating preview")
 
 
 @router.delete("/{project_name}/{filename:path}")
