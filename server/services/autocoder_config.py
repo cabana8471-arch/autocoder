@@ -198,7 +198,7 @@ def _deep_merge(base: dict, override: dict) -> dict:
     Returns:
         Merged dictionary
     """
-    result = base.copy()
+    result = copy.deepcopy(base)
 
     for key, value in override.items():
         if key in result and isinstance(result[key], dict) and isinstance(value, dict):

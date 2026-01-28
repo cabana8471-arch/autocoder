@@ -404,6 +404,12 @@ class VisualRegressionTester:
         Returns:
             True if successful
         """
+        # Validate inputs to prevent path traversal
+        if ".." in name or "/" in name or "\\" in name:
+            raise ValueError(f"Invalid test name: {name}")
+        if ".." in viewport or "/" in viewport or "\\" in viewport:
+            raise ValueError(f"Invalid viewport name: {viewport}")
+
         filename = f"{name}_{viewport}.png"
         current_path = self.current_dir / filename
         baseline_path = self.baselines_dir / filename
@@ -438,7 +444,7 @@ class VisualRegressionTester:
                     "viewport": viewport,
                     "filename": file.name,
                     "size": stat.st_size,
-                    "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                    "modified": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
                 }
             )
 
@@ -446,6 +452,12 @@ class VisualRegressionTester:
 
     def delete_baseline(self, name: str, viewport: str) -> bool:
         """Delete a baseline snapshot."""
+        # Validate inputs to prevent path traversal
+        if ".." in name or "/" in name or "\\" in name:
+            raise ValueError(f"Invalid test name: {name}")
+        if ".." in viewport or "/" in viewport or "\\" in viewport:
+            raise ValueError(f"Invalid viewport name: {viewport}")
+
         filename = f"{name}_{viewport}.png"
         baseline_path = self.baselines_dir / filename
 

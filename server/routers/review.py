@@ -263,6 +263,7 @@ async def create_features_from_issues(request: CreateFeaturesRequest):
         raise HTTPException(status_code=404, detail="Project database not found")
 
     created_features = []
+    session = None
 
     try:
         session = get_session(db_path)
@@ -296,7 +297,6 @@ async def create_features_from_issues(request: CreateFeaturesRequest):
             )
 
         session.commit()
-        session.close()
 
         return CreateFeaturesResponse(
             created=len(created_features),
@@ -306,6 +306,9 @@ async def create_features_from_issues(request: CreateFeaturesRequest):
     except Exception as e:
         logger.error(f"Failed to create features: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if session is not None:
+            session.close()
 
 
 @router.delete("/reports/{project_name}/{filename}")

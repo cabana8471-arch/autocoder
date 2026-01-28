@@ -494,7 +494,8 @@ def atomic_claim_feature(session_maker, feature_id: int) -> dict:
 def atomic_mark_passing(session_maker, feature_id: int) -> dict:
     """Atomically mark a feature as passing.
 
-    Uses atomic UPDATE to ensure consistency.
+    Uses atomic UPDATE with BEGIN IMMEDIATE to ensure consistency and
+    prevent race conditions in parallel mode.
 
     Args:
         session_maker: SQLAlchemy sessionmaker
@@ -503,36 +504,32 @@ def atomic_mark_passing(session_maker, feature_id: int) -> dict:
     Returns:
         Dict with success status and feature name
     """
-    session = session_maker()
     try:
-        # First get the feature name for the response
-        feature = session.query(Feature).filter(Feature.id == feature_id).first()
-        if feature is None:
-            return {"success": False, "error": f"Feature {feature_id} not found"}
+        with atomic_transaction(session_maker) as session:
+            # Get the feature name for the response (protected by write lock)
+            feature = session.query(Feature).filter(Feature.id == feature_id).first()
+            if feature is None:
+                return {"success": False, "error": f"Feature {feature_id} not found"}
 
-        name = feature.name
+            name = feature.name
 
-        # Atomic update
-        session.execute(text("""
-            UPDATE features
-            SET passes = 1, in_progress = 0
-            WHERE id = :id
-        """), {"id": feature_id})
-        session.commit()
+            # Atomic update
+            session.execute(text("""
+                UPDATE features
+                SET passes = 1, in_progress = 0
+                WHERE id = :id
+            """), {"id": feature_id})
 
-        return {"success": True, "feature_id": feature_id, "name": name}
+            return {"success": True, "feature_id": feature_id, "name": name}
     except Exception as e:
-        session.rollback()
         return {"success": False, "error": str(e)}
-    finally:
-        session.close()
 
 
 def atomic_update_priority_to_end(session_maker, feature_id: int) -> dict:
     """Atomically move a feature to the end of the queue.
 
-    Uses a subquery to atomically calculate MAX(priority) + 1 and update
-    in a single statement, preventing race conditions where two features
+    Uses BEGIN IMMEDIATE and a subquery to atomically calculate MAX(priority) + 1
+    and update in a single statement, preventing race conditions where two features
     get the same priority.
 
     Args:
@@ -542,43 +539,43 @@ def atomic_update_priority_to_end(session_maker, feature_id: int) -> dict:
     Returns:
         Dict with old_priority and new_priority
     """
-    session = session_maker()
     try:
-        # First get current state
-        feature = session.query(Feature).filter(Feature.id == feature_id).first()
-        if feature is None:
-            return {"success": False, "error": f"Feature {feature_id} not found"}
-        if feature.passes:
-            return {"success": False, "error": "Cannot skip a feature that is already passing"}
+        with atomic_transaction(session_maker) as session:
+            # Get current state (protected by write lock)
+            feature = session.query(Feature).filter(Feature.id == feature_id).first()
+            if feature is None:
+                return {"success": False, "error": f"Feature {feature_id} not found"}
+            if feature.passes:
+                return {"success": False, "error": "Cannot skip a feature that is already passing"}
 
-        old_priority = feature.priority
+            old_priority = feature.priority
+            name = feature.name
 
-        # Atomic update: set priority to max+1 in a single statement
-        # This prevents race conditions where two features get the same priority
-        session.execute(text("""
-            UPDATE features
-            SET priority = (SELECT COALESCE(MAX(priority), 0) + 1 FROM features),
-                in_progress = 0
-            WHERE id = :id
-        """), {"id": feature_id})
-        session.commit()
+            # Atomic update: set priority to max+1 in a single statement
+            session.execute(text("""
+                UPDATE features
+                SET priority = (SELECT COALESCE(MAX(priority), 0) + 1 FROM features),
+                    in_progress = 0
+                WHERE id = :id
+            """), {"id": feature_id})
 
-        # Fetch the new priority
-        session.refresh(feature)
-        new_priority = feature.priority
+            # Flush to ensure update is visible, then fetch new priority
+            session.flush()
+            result = session.execute(
+                text("SELECT priority FROM features WHERE id = :id"),
+                {"id": feature_id}
+            ).fetchone()
+            new_priority = result[0] if result else old_priority + 1
 
-        return {
-            "success": True,
-            "id": feature_id,
-            "name": feature.name,
-            "old_priority": old_priority,
-            "new_priority": new_priority,
-        }
+            return {
+                "success": True,
+                "id": feature_id,
+                "name": name,
+                "old_priority": old_priority,
+                "new_priority": new_priority,
+            }
     except Exception as e:
-        session.rollback()
         return {"success": False, "error": str(e)}
-    finally:
-        session.close()
 
 
 def atomic_get_next_priority(session_maker) -> int:
