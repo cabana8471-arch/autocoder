@@ -581,7 +581,7 @@ def atomic_update_priority_to_end(session_maker, feature_id: int) -> dict:
 def atomic_get_next_priority(session_maker) -> int:
     """Atomically get the next available priority.
 
-    Uses a transaction to ensure consistent reads.
+    Uses BEGIN IMMEDIATE to ensure consistent reads under concurrent access.
 
     Args:
         session_maker: SQLAlchemy sessionmaker
@@ -591,9 +591,15 @@ def atomic_get_next_priority(session_maker) -> int:
     """
     session = session_maker()
     try:
+        # Use BEGIN IMMEDIATE for proper serialization in parallel mode
+        session.execute(text("BEGIN IMMEDIATE"))
         result = session.execute(text("""
             SELECT COALESCE(MAX(priority), 0) + 1 FROM features
         """)).fetchone()
+        session.commit()
         return result[0]
+    except Exception:
+        session.rollback()
+        raise
     finally:
         session.close()

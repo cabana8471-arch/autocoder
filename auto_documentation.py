@@ -584,7 +584,9 @@ class DocumentationGenerator:
         # Group endpoints by base path
         grouped = {}
         for ep in docs.api_endpoints:
-            base = ep.path.split("/")[1] if "/" in ep.path else "root"
+            # Handle root path "/" and paths like "/api/..."
+            parts = ep.path.split("/")
+            base = parts[1] if len(parts) > 1 and parts[1] else "root"
             if base not in grouped:
                 grouped[base] = []
             grouped[base].append(ep)

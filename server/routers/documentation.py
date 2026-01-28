@@ -75,7 +75,7 @@ class PreviewResponse(BaseModel):
 
     content: str
     project_name: str
-    description: str
+    description: Optional[str] = None
     tech_stack: dict
     features_count: int
     endpoints_count: int

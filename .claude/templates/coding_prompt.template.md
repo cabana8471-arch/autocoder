@@ -193,8 +193,9 @@ grep -r "TODO.*real\|TODO.*database\|TODO.*API\|STUB\|MOCK" --include="*.ts" --i
 # 4. Development-only conditionals
 grep -r "isDevelopment\|isDev\|process\.env\.NODE_ENV.*development" --include="*.ts" --include="*.tsx" --include="*.js" src/
 
-# 5. In-memory collections as data stores
-grep -r "new Map\(\)\|new Set\(\)" --include="*.ts" --include="*.tsx" --include="*.js" src/ 2>/dev/null
+# 5. In-memory collections used as data stores (module-level or exported)
+# Note: Map/Set are legitimate for local caching - investigate context before flagging
+grep -rn "^const.*=.*new Map\(\)\|^let.*=.*new Map\(\)\|^export.*Map\(\)" --include="*.ts" --include="*.tsx" --include="*.js" src/ 2>/dev/null
 ```
 
 **Rule:** If ANY grep returns results in production code → investigate → FIX before marking passing.
