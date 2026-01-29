@@ -10,6 +10,7 @@ import shutil
 import sqlite3
 import tempfile
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import TestCase
@@ -401,6 +402,7 @@ class TestThreadSafety(TestCase):
             while not write_done.is_set():
                 count = query.count()
                 read_results.append(count)
+                time.sleep(0.01)  # Avoid busy-spin to reduce CPU usage in CI
 
         writer_thread = threading.Thread(target=writer)
         reader_thread = threading.Thread(target=reader)

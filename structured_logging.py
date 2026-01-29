@@ -30,11 +30,30 @@ import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 # Type aliases
 # Note: Python's logging uses "warning" but we normalize to "warn" for consistency
 LogLevel = Literal["debug", "info", "warn", "warning", "error"]
+
+
+def _format_ts(dt: datetime) -> str:
+    """
+    Format a datetime to ISO 8601 string with UTC "Z" suffix.
+
+    Ensures timezone-aware datetimes are converted to UTC first.
+    Naive datetimes are assumed to be UTC.
+
+    Args:
+        dt: Datetime to format
+
+    Returns:
+        ISO 8601 string with "Z" suffix (e.g., "2025-01-21T10:30:00.000Z")
+    """
+    if dt.tzinfo is not None:
+        # Convert to UTC if timezone-aware
+        dt = dt.astimezone(timezone.utc)
+    return dt.isoformat().replace("+00:00", "Z")
 
 
 @dataclass
@@ -48,9 +67,9 @@ class StructuredLogEntry:
     feature_id: Optional[int] = None
     tool_name: Optional[str] = None
     duration_ms: Optional[int] = None
-    extra: dict = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary, excluding None values."""
         result = {
             "timestamp": self.timestamp,
@@ -151,7 +170,7 @@ class StructuredLogHandler(logging.Handler):
             if level == "warning":
                 level = "warn"
             entry = StructuredLogEntry(
-                timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                timestamp=_format_ts(datetime.now(timezone.utc)),
                 level=level,
                 message=self.format(record),
                 agent_id=getattr(record, "agent_id", self.agent_id),
@@ -375,13 +394,11 @@ class LogQuery:
 
             if since:
                 conditions.append("timestamp >= ?")
-                # Use consistent timestamp format with stored logs (Z suffix for UTC)
-                params.append(since.isoformat().replace("+00:00", "Z"))
+                params.append(_format_ts(since))
 
             if until:
                 conditions.append("timestamp <= ?")
-                # Use consistent timestamp format with stored logs (Z suffix for UTC)
-                params.append(until.isoformat().replace("+00:00", "Z"))
+                params.append(_format_ts(until))
 
             where_clause = " AND ".join(conditions) if conditions else "1=1"
 
@@ -423,8 +440,7 @@ class LogQuery:
                 params.append(feature_id)
             if since:
                 conditions.append("timestamp >= ?")
-                # Use consistent timestamp format with stored logs (Z suffix for UTC)
-                params.append(since.isoformat().replace("+00:00", "Z"))
+                params.append(_format_ts(since))
 
             where_clause = " AND ".join(conditions) if conditions else "1=1"
             cursor.execute(f"SELECT COUNT(*) FROM logs WHERE {where_clause}", params)
@@ -463,7 +479,7 @@ class LogQuery:
                 GROUP BY bucket, agent_id
                 ORDER BY bucket
                 """,
-                (bucket_minutes, bucket_minutes, since.isoformat().replace("+00:00", "Z"), until.isoformat().replace("+00:00", "Z")),
+                (bucket_minutes, bucket_minutes, _format_ts(since), _format_ts(until)),
             )
 
             rows = cursor.fetchall()
@@ -487,8 +503,7 @@ class LogQuery:
         where_clause = "1=1"
         if since:
             where_clause = "timestamp >= ?"
-            # Use consistent timestamp format with stored logs (Z suffix for UTC)
-            params.append(since.isoformat().replace("+00:00", "Z"))
+            params.append(_format_ts(since))
 
         with self._connect() as conn:
             cursor = conn.cursor()
