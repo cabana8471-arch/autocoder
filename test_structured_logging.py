@@ -153,7 +153,7 @@ class TestStructuredLogger(TestCase):
         logger.warn("Test warning")
 
         query = get_log_query(self.project_dir)
-        # Level is normalized to "warn" to match LogLevel type
+        # Level is normalized to "warn" when stored (from Python's "warning")
         logs = query.query(level="warn")
         self.assertEqual(len(logs), 1)
         # Assert on level field, not message content (more robust)
@@ -438,6 +438,8 @@ class TestCleanup(TestCase):
         db_path = self.project_dir / ".autocoder" / "logs.db"
         db_path.parent.mkdir(parents=True, exist_ok=True)
         handler = StructuredLogHandler(db_path, max_entries=10)
+        # Set low cleanup interval so cleanup triggers during test
+        handler._cleanup_interval = 5
 
         # Create a logger using this handler
         import logging
@@ -446,7 +448,7 @@ class TestCleanup(TestCase):
         logger.addHandler(handler)
         logger.setLevel(logging.DEBUG)
 
-        # Write more than max_entries
+        # Write more than max_entries (and more than cleanup_interval to trigger cleanup)
         for i in range(20):
             logger.info(f"Log message {i}")
 
