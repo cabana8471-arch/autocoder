@@ -38,7 +38,7 @@ Use the feature_create_bulk tool to add all features at once. You can create fea
 - Reference tiers for other projects:
   - **Simple apps**: ~165 tests (includes 5 infrastructure)
   - **Medium apps**: ~265 tests (includes 5 infrastructure)
-  - **Complex apps**: ~405+ tests (includes 5 infrastructure)
+  - **Advanced apps**: ~405+ tests (includes 5 infrastructure)
 - Both "functional" and "style" categories
 - Mix of narrow tests (2-5 steps) and comprehensive tests (10+ steps)
 - At least 25 tests MUST have 10+ steps each (more for complex apps)
@@ -199,7 +199,7 @@ The feature_list.json **MUST** include tests from ALL 20 categories. Minimum cou
 
 ### Category Distribution by Complexity Tier
 
-| Category                         | Simple  | Medium  | Complex  |
+| Category                         | Simple  | Medium  | Advanced |
 | -------------------------------- | ------- | ------- | -------- |
 | **0. Infrastructure (REQUIRED)** | 5       | 5       | 5        |
 | A. Security & Access Control     | 5       | 20      | 40       |
