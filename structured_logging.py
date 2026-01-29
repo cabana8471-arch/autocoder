@@ -419,7 +419,8 @@ class LogQuery:
             params.append(feature_id)
         if since:
             conditions.append("timestamp >= ?")
-            params.append(since.isoformat())
+            ts = since.isoformat().replace("+00:00", "Z")
+            params.append(ts if ts.endswith("Z") else since.isoformat())
 
         where_clause = " AND ".join(conditions) if conditions else "1=1"
         cursor.execute(f"SELECT COUNT(*) FROM logs WHERE {where_clause}", params)
@@ -460,7 +461,12 @@ class LogQuery:
             GROUP BY bucket, agent_id
             ORDER BY bucket
             """,
-            (bucket_minutes, bucket_minutes, since.isoformat(), until.isoformat()),
+            (
+                bucket_minutes,
+                bucket_minutes,
+                since.isoformat().replace("+00:00", "Z"),
+                until.isoformat().replace("+00:00", "Z"),
+            ),
         )
 
         rows = cursor.fetchall()

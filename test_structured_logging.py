@@ -6,6 +6,7 @@ Tests for the structured logging system that saves logs to SQLite.
 """
 
 import json
+import shutil
 import sqlite3
 import tempfile
 import threading
@@ -81,7 +82,6 @@ class TestStructuredLogHandler(TestCase):
 
     def tearDown(self):
         """Clean up temporary files."""
-        import shutil
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_creates_database(self):
@@ -120,7 +120,6 @@ class TestStructuredLogger(TestCase):
 
     def tearDown(self):
         """Clean up temporary files."""
-        import shutil
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_creates_logs_directory(self):
@@ -212,7 +211,6 @@ class TestLogQuery(TestCase):
 
     def tearDown(self):
         """Clean up temporary files."""
-        import shutil
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_query_by_level(self):
@@ -302,7 +300,6 @@ class TestLogExport(TestCase):
 
     def tearDown(self):
         """Clean up temporary files."""
-        import shutil
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_export_json(self):
@@ -360,7 +357,6 @@ class TestThreadSafety(TestCase):
 
     def tearDown(self):
         """Clean up temporary files."""
-        import shutil
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_concurrent_writes(self):
@@ -434,7 +430,6 @@ class TestCleanup(TestCase):
 
     def tearDown(self):
         """Clean up temporary files."""
-        import shutil
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_cleanup_old_entries(self):
@@ -462,8 +457,8 @@ class TestCleanup(TestCase):
         count = cursor.fetchone()[0]
         conn.close()
 
-        # Should have at most max_entries
-        self.assertLessEqual(count, 10)
+        # Should have exactly max_entries after cleanup
+        self.assertEqual(count, 10)
 
 
 if __name__ == "__main__":
