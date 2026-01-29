@@ -23,6 +23,7 @@ Log Format:
 }
 """
 
+import hashlib
 import json
 import logging
 import sqlite3
@@ -42,7 +43,7 @@ def _format_ts(dt: datetime) -> str:
     Format a datetime to ISO 8601 string with UTC "Z" suffix.
 
     Ensures timezone-aware datetimes are converted to UTC first.
-    Naive datetimes are assumed to be UTC.
+    Naive datetimes are assumed to be UTC and get tzinfo set.
 
     Args:
         dt: Datetime to format
@@ -50,7 +51,10 @@ def _format_ts(dt: datetime) -> str:
     Returns:
         ISO 8601 string with "Z" suffix (e.g., "2025-01-21T10:30:00.000Z")
     """
-    if dt.tzinfo is not None:
+    if dt.tzinfo is None:
+        # Treat naive datetimes as UTC
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
         # Convert to UTC if timezone-aware
         dt = dt.astimezone(timezone.utc)
     return dt.isoformat().replace("+00:00", "Z")
@@ -251,7 +255,6 @@ class StructuredLogger:
 
         # Setup logger with unique name per instance to avoid handler accumulation
         # across tests and multiple invocations. Include project path hash for uniqueness.
-        import hashlib
         path_hash = hashlib.md5(str(self.project_dir).encode()).hexdigest()[:8]
         logger_name = f"autocoder.{agent_id or 'main'}.{path_hash}.{id(self)}"
         self.logger = logging.getLogger(logger_name)
@@ -389,7 +392,8 @@ class LogQuery:
             if search:
                 conditions.append("message LIKE ? ESCAPE '\\'")
                 # Escape LIKE wildcards to prevent unexpected query behavior
-                escaped_search = search.replace("%", "\\%").replace("_", "\\_")
+                # Escape backslash FIRST, then LIKE wildcards
+                escaped_search = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
                 params.append(f"%{escaped_search}%")
 
             if since:
@@ -569,7 +573,7 @@ class LogQuery:
     def export_logs(
         self,
         output_path: Path,
-        format: Literal["json", "jsonl", "csv"] = "jsonl",
+        output_format: Literal["json", "jsonl", "csv"] = "jsonl",
         batch_size: int = 1000,
         **filters,
     ) -> int:
@@ -578,7 +582,7 @@ class LogQuery:
 
         Args:
             output_path: Output file path
-            format: Export format (json, jsonl, csv)
+            output_format: Export format (json, jsonl, csv)
             batch_size: Number of rows to fetch per batch (default 1000)
             **filters: Query filters
 
@@ -592,7 +596,7 @@ class LogQuery:
 
         count = 0
 
-        if format == "json":
+        if output_format == "json":
             # For JSON format, we still need to collect all to produce valid JSON
             # but we stream to avoid massive single query
             with open(output_path, "w") as f:
@@ -606,13 +610,13 @@ class LogQuery:
                     count += 1
                 f.write("\n]")
 
-        elif format == "jsonl":
+        elif output_format == "jsonl":
             with open(output_path, "w") as f:
                 for log in self._iter_logs(batch_size=batch_size, **filters):
                     f.write(json.dumps(log) + "\n")
                     count += 1
 
-        elif format == "csv":
+        elif output_format == "csv":
             fieldnames = None
             with open(output_path, "w", newline="") as f:
                 writer = None

@@ -307,7 +307,7 @@ class TestLogExport(TestCase):
         """Test JSON export."""
         query = get_log_query(self.project_dir)
         output_path = self.export_dir / "logs.json"
-        count = query.export_logs(output_path, format="json")
+        count = query.export_logs(output_path, output_format="json")
 
         self.assertEqual(count, 3)
         self.assertTrue(output_path.exists())
@@ -320,7 +320,7 @@ class TestLogExport(TestCase):
         """Test JSONL export."""
         query = get_log_query(self.project_dir)
         output_path = self.export_dir / "logs.jsonl"
-        count = query.export_logs(output_path, format="jsonl")
+        count = query.export_logs(output_path, output_format="jsonl")
 
         self.assertEqual(count, 3)
         self.assertTrue(output_path.exists())
@@ -336,7 +336,7 @@ class TestLogExport(TestCase):
         """Test CSV export."""
         query = get_log_query(self.project_dir)
         output_path = self.export_dir / "logs.csv"
-        count = query.export_logs(output_path, format="csv")
+        count = query.export_logs(output_path, output_format="csv")
 
         self.assertEqual(count, 3)
         self.assertTrue(output_path.exists())
