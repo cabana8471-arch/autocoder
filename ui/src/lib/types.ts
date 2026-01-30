@@ -16,7 +16,7 @@ export interface ProjectSummary {
   has_spec: boolean
   stats: ProjectStats
   default_concurrency: number
-  is_detached?: boolean  // True if Autocoder files moved to backup
+  is_detached: boolean  // True if Autocoder files moved to backup
 }
 
 export interface ProjectDetail extends ProjectSummary {

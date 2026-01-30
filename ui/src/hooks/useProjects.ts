@@ -80,8 +80,10 @@ export function useDetachProject() {
 
   return useMutation({
     mutationFn: (name: string) => api.detachProject(name),
-    onSuccess: () => {
+    onSuccess: (_data, name) => {
       queryClient.invalidateQueries({ queryKey: ['projects'] })
+      queryClient.invalidateQueries({ queryKey: ['project', name] })
+      queryClient.invalidateQueries({ queryKey: ['features', name] })
     },
   })
 }
@@ -91,8 +93,10 @@ export function useReattachProject() {
 
   return useMutation({
     mutationFn: (name: string) => api.reattachProject(name),
-    onSuccess: () => {
+    onSuccess: (_data, name) => {
       queryClient.invalidateQueries({ queryKey: ['projects'] })
+      queryClient.invalidateQueries({ queryKey: ['project', name] })
+      queryClient.invalidateQueries({ queryKey: ['features', name] })
     },
   })
 }

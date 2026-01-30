@@ -16,6 +16,7 @@ import argparse
 import hashlib
 import json
 import logging
+import os
 import shutil
 import sys
 from datetime import datetime, timezone
@@ -34,6 +35,9 @@ DETACH_LOCK = ".autocoder-detach.lock"
 
 # Version for manifest format
 MANIFEST_VERSION = 1
+
+# Lock file timeout in seconds (5 minutes)
+LOCK_TIMEOUT_SECONDS = 300
 
 # Autocoder file patterns to detect and move
 # Directories (will be moved recursively)
@@ -183,16 +187,51 @@ def acquire_detach_lock(project_dir: Path) -> bool:
     """
     Acquire lock for detach operations.
 
+    Writes PID and timestamp to lock file for stale lock detection.
+
     Returns:
         True if lock acquired, False if already locked
     """
     lock_file = project_dir / DETACH_LOCK
     try:
-        lock_file.touch(exist_ok=False)
+        # Check for stale lock first
+        if lock_file.exists():
+            try:
+                lock_data = json.loads(lock_file.read_text(encoding="utf-8"))
+                lock_pid = lock_data.get("pid")
+                lock_time = lock_data.get("timestamp", 0)
+
+                # Check if process is still alive
+                if lock_pid is not None:
+                    try:
+                        os.kill(lock_pid, 0)  # Check if process exists
+                        # Process exists, check timeout
+                        elapsed = datetime.now(timezone.utc).timestamp() - lock_time
+                        if elapsed < LOCK_TIMEOUT_SECONDS:
+                            return False  # Lock is valid
+                        # Lock is stale (timeout exceeded)
+                        logger.warning("Removing stale lock (timeout): pid=%s", lock_pid)
+                    except OSError:
+                        # Process doesn't exist - stale lock
+                        logger.warning("Removing stale lock (dead process): pid=%s", lock_pid)
+            except (json.JSONDecodeError, OSError, KeyError):
+                # Corrupted lock file - remove it
+                logger.warning("Removing corrupted lock file")
+
+            # Remove stale/corrupted lock
+            lock_file.unlink(missing_ok=True)
+
+        # Create new lock with PID and timestamp
+        lock_data = {
+            "pid": os.getpid(),
+            "timestamp": datetime.now(timezone.utc).timestamp(),
+        }
+        lock_file.write_text(json.dumps(lock_data), encoding="utf-8")
         return True
     except FileExistsError:
         return False
-    except OSError:
+    except OSError as e:
+        logger.error("Failed to acquire lock: %s", e)
         return False
 
 
@@ -210,6 +249,8 @@ def create_backup(
 ) -> Manifest:
     """
     Create backup of Autocoder files.
+
+    Uses copy-then-delete approach to prevent data loss on partial failures.
 
     Args:
         project_dir: Path to project directory
@@ -269,39 +310,69 @@ def create_backup(
 
     # Create backup directory
     backup_dir.mkdir(parents=True, exist_ok=True)
+    copied_files: list[Path] = []
 
-    # Move files to backup
-    for file_path in files:
-        relative_path = file_path.relative_to(project_dir)
-        dest_path = backup_dir / relative_path
+    try:
+        # Phase 1: Copy files to backup (preserves originals on failure)
+        for file_path in files:
+            relative_path = file_path.relative_to(project_dir)
+            dest_path = backup_dir / relative_path
 
-        # Ensure parent directory exists
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
+            # Ensure parent directory exists
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Move file/directory
-        shutil.move(str(file_path), str(dest_path))
-        logger.debug("Moved %s to backup", relative_path)
+            # Copy file/directory (handle symlinks explicitly)
+            if file_path.is_symlink():
+                # Preserve symlinks as symlinks
+                link_target = os.readlink(file_path)
+                dest_path.symlink_to(link_target)
+            elif file_path.is_dir():
+                shutil.copytree(file_path, dest_path, symlinks=True)
+            else:
+                shutil.copy2(file_path, dest_path)
 
-    # Write manifest
-    manifest_path = backup_dir / MANIFEST_FILE
-    with open(manifest_path, "w", encoding="utf-8") as f:
-        json.dump(manifest, f, indent=2)
+            copied_files.append(file_path)
+            logger.debug("Copied %s to backup", relative_path)
+
+        # Phase 2: Write manifest (before deleting originals)
+        manifest_path = backup_dir / MANIFEST_FILE
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2)
+
+        # Phase 3: Delete originals (only after successful copy + manifest)
+        for file_path in files:
+            if file_path.is_dir() and not file_path.is_symlink():
+                shutil.rmtree(file_path)
+            else:
+                file_path.unlink()
+            logger.debug("Removed original: %s", file_path.relative_to(project_dir))
+
+    except Exception as e:
+        # Cleanup partial backup on failure
+        logger.error("Backup failed: %s - cleaning up partial backup", e)
+        if backup_dir.exists():
+            shutil.rmtree(backup_dir)
+        raise
 
     return manifest
 
 
-def restore_backup(project_dir: Path) -> tuple[bool, int]:
+def restore_backup(project_dir: Path, verify_checksums: bool = False) -> tuple[bool, int]:
     """
     Restore files from backup.
 
+    Uses copy-then-delete approach to prevent data loss on partial failures.
+
     Args:
         project_dir: Path to project directory
+        verify_checksums: If True, verify file checksums after restore
 
     Returns:
         Tuple of (success, files_restored)
     """
     backup_dir = project_dir / BACKUP_DIR
     manifest_path = backup_dir / MANIFEST_FILE
+    project_dir_resolved = project_dir.resolve()
 
     if not manifest_path.exists():
         logger.error("No backup manifest found")
@@ -315,19 +386,45 @@ def restore_backup(project_dir: Path) -> tuple[bool, int]:
         logger.error("Failed to read manifest: %s", e)
         return False, 0
 
+    # Validate manifest structure
+    required_keys = {"version", "files", "detached_at"}
+    if not required_keys.issubset(manifest.keys()):
+        logger.error("Invalid manifest structure: missing required keys")
+        return False, 0
+
+    # Check manifest version compatibility
+    manifest_version = manifest.get("version", 1)
+    if manifest_version > MANIFEST_VERSION:
+        logger.error(
+            "Manifest version %d not supported (max: %d)",
+            manifest_version, MANIFEST_VERSION
+        )
+        return False, 0
+
     # Restore files
     files_restored = 0
+    restored_entries: list[dict] = []
+
     for entry in manifest["files"]:
         src_path = backup_dir / entry["path"]
         dest_path = project_dir / entry["path"]
+
+        # SECURITY: Validate path to prevent path traversal attacks
+        try:
+            dest_resolved = dest_path.resolve()
+            # Ensure the resolved path is within the project directory
+            dest_resolved.relative_to(project_dir_resolved)
+        except ValueError:
+            logger.error("Path traversal detected: %s", entry["path"])
+            return False, 0
 
         if not src_path.exists():
             logger.warning("Backup file missing: %s", entry["path"])
             continue
 
-        # Remove existing destination if it exists
+        # Remove existing destination if it exists (after path validation)
         if dest_path.exists():
-            if dest_path.is_dir():
+            if dest_path.is_dir() and not dest_path.is_symlink():
                 shutil.rmtree(dest_path)
             else:
                 dest_path.unlink()
@@ -335,16 +432,48 @@ def restore_backup(project_dir: Path) -> tuple[bool, int]:
         # Ensure parent directory exists
         dest_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Move back to project
-        shutil.move(str(src_path), str(dest_path))
+        # Copy back to project (not move - we'll delete backup only after all succeed)
+        try:
+            if src_path.is_symlink():
+                link_target = os.readlink(src_path)
+                dest_path.symlink_to(link_target)
+            elif src_path.is_dir():
+                shutil.copytree(src_path, dest_path, symlinks=True)
+            else:
+                shutil.copy2(src_path, dest_path)
+        except OSError as e:
+            logger.error("Failed to restore %s: %s", entry["path"], e)
+            return False, files_restored
+
+        # Verify checksum if requested and available
+        if verify_checksums and entry.get("checksum") and entry["type"] == "file":
+            actual_checksum = compute_file_checksum(dest_path)
+            if actual_checksum != entry["checksum"]:
+                logger.warning(
+                    "Checksum mismatch for %s: expected %s, got %s",
+                    entry["path"], entry["checksum"], actual_checksum
+                )
+
         if entry["type"] == "directory":
             files_restored += entry.get("file_count") or 0
         else:
             files_restored += 1
+
+        restored_entries.append(entry)
         logger.debug("Restored %s", entry["path"])
 
-    # Remove backup directory
-    shutil.rmtree(backup_dir)
+    # Only remove backup directory if ALL files were restored
+    expected_count = len(manifest["files"])
+    restored_count = len(restored_entries)
+
+    if restored_count == expected_count:
+        shutil.rmtree(backup_dir)
+        logger.info("Backup directory removed after successful restore")
+    else:
+        logger.warning(
+            "Partial restore: %d/%d files - backup preserved",
+            restored_count, expected_count
+        )
 
     return True, files_restored
 
@@ -352,11 +481,14 @@ def restore_backup(project_dir: Path) -> tuple[bool, int]:
 def update_gitignore(project_dir: Path) -> None:
     """Add .autocoder-backup/ to .gitignore if not already present."""
     gitignore_path = project_dir / ".gitignore"
-    backup_entry = f"\n# Autocoder backup (for reattach)\n{BACKUP_DIR}/\n"
+    backup_pattern = f"{BACKUP_DIR}/"
+    backup_entry = f"\n# Autocoder backup (for reattach)\n{backup_pattern}\n"
 
     if gitignore_path.exists():
         content = gitignore_path.read_text(encoding="utf-8")
-        if BACKUP_DIR not in content:
+        # Use line-based matching to avoid false positives from comments/paths
+        lines = content.splitlines()
+        if not any(line.strip() == backup_pattern for line in lines):
             with open(gitignore_path, "a", encoding="utf-8") as f:
                 f.write(backup_entry)
             logger.info("Added %s to .gitignore", BACKUP_DIR)
@@ -568,24 +700,33 @@ Examples:
         action="store_true",
         help="Skip confirmations and safety checks",
     )
-    parser.add_argument(
+
+    # Mutually exclusive artifact options
+    artifact_group = parser.add_mutually_exclusive_group()
+    artifact_group.add_argument(
         "--include-artifacts",
+        dest="include_artifacts",
         action="store_true",
         default=True,
-        help="Include artifacts (.playwright-mcp, screenshots) in backup (default: True)",
+        help="Include artifacts (.playwright-mcp, screenshots) in backup (default)",
     )
-    parser.add_argument(
+    artifact_group.add_argument(
         "--no-artifacts",
-        action="store_true",
+        dest="include_artifacts",
+        action="store_false",
         help="Exclude artifacts from backup",
     )
+
     parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="Enable verbose logging",
     )
 
-    args = parser.parse_args()
+    try:
+        args = parser.parse_args()
+    except SystemExit:
+        return 1
 
     # Configure logging
     logging.basicConfig(
@@ -593,80 +734,83 @@ Examples:
         format="%(levelname)s: %(message)s",
     )
 
-    # Handle --list
-    if args.list:
-        projects = list_projects_with_status()
-        if not projects:
-            print("No projects registered.")
+    try:
+        # Handle --list
+        if args.list:
+            projects = list_projects_with_status()
+            if not projects:
+                print("No projects registered.")
+                return 0
+
+            print("\nRegistered Projects:")
+            print("-" * 60)
+            for p in projects:
+                status = "DETACHED" if p["is_detached"] else "attached"
+                print(f"  [{status:8}] {p['name']}")
+                print(f"            {p['path']}")
+            print()
             return 0
 
-        print("\nRegistered Projects:")
-        print("-" * 60)
-        for p in projects:
-            status = "DETACHED" if p["is_detached"] else "attached"
-            print(f"  [{status:8}] {p['name']}")
-            print(f"            {p['path']}")
-        print()
-        return 0
-
-    # All other commands require a project
-    if not args.project:
-        parser.print_help()
-        return 1
-
-    # Handle --status
-    if args.status:
-        status = get_detach_status(args.project)
-        if "error" in status:
-            print(f"Error: {status['error']}")
+        # All other commands require a project
+        if not args.project:
+            parser.print_help()
             return 1
 
-        print(f"\nProject: {args.project}")
-        print("-" * 40)
-        if status["is_detached"]:
-            print("  Status: DETACHED")
-            print(f"  Detached at: {status['detached_at']}")
-            print(f"  Backup size: {status['backup_size'] / 1024 / 1024:.1f} MB")
-            print(f"  Files in backup: {status['file_count']}")
-        else:
-            print("  Status: attached (Autocoder files present)")
-        print()
-        return 0
+        # Handle --status
+        if args.status:
+            status = get_detach_status(args.project)
+            if "error" in status:
+                print(f"Error: {status['error']}")
+                return 1
 
-    # Handle --reattach
-    if args.reattach:
-        print(f"\nReattaching project: {args.project}")
-        success, message, files_restored = reattach_project(args.project)
+            print(f"\nProject: {args.project}")
+            print("-" * 40)
+            if status["is_detached"]:
+                print("  Status: DETACHED")
+                print(f"  Detached at: {status['detached_at']}")
+                print(f"  Backup size: {status['backup_size'] / 1024 / 1024:.1f} MB")
+                print(f"  Files in backup: {status['file_count']}")
+            else:
+                print("  Status: attached (Autocoder files present)")
+            print()
+            return 0
+
+        # Handle --reattach
+        if args.reattach:
+            print(f"\nReattaching project: {args.project}")
+            success, message, files_restored = reattach_project(args.project)
+            print(f"  {message}")
+            return 0 if success else 1
+
+        # Handle detach (default)
+        if args.dry_run:
+            print(f"\nDRY RUN - Previewing detach for: {args.project}")
+        else:
+            print(f"\nDetaching project: {args.project}")
+
+        success, message, manifest = detach_project(
+            args.project,
+            force=args.force,
+            include_artifacts=args.include_artifacts,
+            dry_run=args.dry_run,
+        )
+
         print(f"  {message}")
+
+        if manifest and args.dry_run:
+            print("\n  Files to be moved:")
+            for entry in manifest["files"]:
+                size_str = f"{entry['size'] / 1024:.1f} KB"
+                if entry["type"] == "directory":
+                    print(f"    [DIR] {entry['path']} ({entry['file_count']} files, {size_str})")
+                else:
+                    print(f"    [FILE] {entry['path']} ({size_str})")
+
         return 0 if success else 1
 
-    # Handle detach (default)
-    include_artifacts = not args.no_artifacts
-
-    if args.dry_run:
-        print(f"\nDRY RUN - Previewing detach for: {args.project}")
-    else:
-        print(f"\nDetaching project: {args.project}")
-
-    success, message, manifest = detach_project(
-        args.project,
-        force=args.force,
-        include_artifacts=include_artifacts,
-        dry_run=args.dry_run,
-    )
-
-    print(f"  {message}")
-
-    if manifest and args.dry_run:
-        print("\n  Files to be moved:")
-        for entry in manifest["files"]:
-            size_str = f"{entry['size'] / 1024:.1f} KB"
-            if entry["type"] == "directory":
-                print(f"    [DIR] {entry['path']} ({entry['file_count']} files, {size_str})")
-            else:
-                print(f"    [FILE] {entry['path']} ({size_str})")
-
-    return 0 if success else 1
+    except KeyboardInterrupt:
+        print("\n\nOperation cancelled.")
+        return 130  # Standard exit code for Ctrl+C
 
 
 if __name__ == "__main__":

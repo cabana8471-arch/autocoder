@@ -575,15 +575,40 @@ class TestDetachLock(unittest.TestCase):
         self.assertTrue(result)
         self.assertTrue((self.project_dir / detach.DETACH_LOCK).exists())
 
-    def test_acquire_lock_fails_if_locked(self):
-        """Should fail to acquire lock if already locked."""
-        (self.project_dir / detach.DETACH_LOCK).touch()
+    def test_acquire_lock_writes_pid_and_timestamp(self):
+        """Should write PID and timestamp to lock file."""
+        import os
+        detach.acquire_detach_lock(self.project_dir)
+        lock_content = json.loads((self.project_dir / detach.DETACH_LOCK).read_text())
+        self.assertEqual(lock_content["pid"], os.getpid())
+        self.assertIn("timestamp", lock_content)
+
+    def test_acquire_lock_fails_if_locked_by_live_process(self):
+        """Should fail to acquire lock if already locked by live process."""
+        import os
+        # Create lock with current process PID (which is alive)
+        lock_data = {"pid": os.getpid(), "timestamp": 9999999999}
+        (self.project_dir / detach.DETACH_LOCK).write_text(json.dumps(lock_data))
         result = detach.acquire_detach_lock(self.project_dir)
         self.assertFalse(result)
 
+    def test_acquire_lock_removes_stale_lock_dead_process(self):
+        """Should remove stale lock from dead process."""
+        # Create lock with non-existent PID
+        lock_data = {"pid": 999999999, "timestamp": 9999999999}
+        (self.project_dir / detach.DETACH_LOCK).write_text(json.dumps(lock_data))
+        result = detach.acquire_detach_lock(self.project_dir)
+        self.assertTrue(result)  # Should succeed after removing stale lock
+
+    def test_acquire_lock_removes_corrupted_lock(self):
+        """Should remove corrupted lock file."""
+        (self.project_dir / detach.DETACH_LOCK).write_text("not valid json")
+        result = detach.acquire_detach_lock(self.project_dir)
+        self.assertTrue(result)
+
     def test_release_lock(self):
         """Should release lock successfully."""
-        (self.project_dir / detach.DETACH_LOCK).touch()
+        (self.project_dir / detach.DETACH_LOCK).write_text("{}")
         detach.release_detach_lock(self.project_dir)
         self.assertFalse((self.project_dir / detach.DETACH_LOCK).exists())
 
@@ -591,6 +616,199 @@ class TestDetachLock(unittest.TestCase):
         """Should handle missing lock file gracefully."""
         # Should not raise
         detach.release_detach_lock(self.project_dir)
+
+
+class TestSecurityPathTraversal(unittest.TestCase):
+    """Security tests for path traversal protection."""
+
+    def setUp(self):
+        """Create temporary project with backup."""
+        self.temp_dir = tempfile.mkdtemp()
+        self.project_dir = Path(self.temp_dir)
+
+        # Create backup directory
+        backup_dir = self.project_dir / detach.BACKUP_DIR
+        backup_dir.mkdir()
+
+    def tearDown(self):
+        """Clean up temporary directory."""
+        shutil.rmtree(self.temp_dir)
+
+    def test_restore_blocks_path_traversal(self):
+        """Should reject manifest with path traversal attempt."""
+        backup_dir = self.project_dir / detach.BACKUP_DIR
+
+        # Create malicious manifest with path traversal
+        manifest = {
+            "version": 1,
+            "detached_at": "2024-01-01T00:00:00Z",
+            "project_name": "malicious",
+            "autocoder_version": "1.0.0",
+            "files": [
+                {
+                    "path": "../../../etc/passwd",  # Path traversal attempt
+                    "type": "file",
+                    "size": 100,
+                    "checksum": None,
+                    "file_count": None,
+                }
+            ],
+            "total_size_bytes": 100,
+            "file_count": 1,
+        }
+        (backup_dir / detach.MANIFEST_FILE).write_text(json.dumps(manifest))
+
+        # Note: We don't need to create the actual malicious file - the validation
+        # catches it during path resolution before attempting to access the source file
+
+        success, _ = detach.restore_backup(self.project_dir)
+        self.assertFalse(success)
+
+    def test_restore_blocks_absolute_path(self):
+        """Should reject manifest with absolute path."""
+        backup_dir = self.project_dir / detach.BACKUP_DIR
+
+        manifest = {
+            "version": 1,
+            "detached_at": "2024-01-01T00:00:00Z",
+            "project_name": "malicious",
+            "autocoder_version": "1.0.0",
+            "files": [
+                {
+                    "path": "/etc/passwd",  # Absolute path
+                    "type": "file",
+                    "size": 100,
+                    "checksum": None,
+                    "file_count": None,
+                }
+            ],
+            "total_size_bytes": 100,
+            "file_count": 1,
+        }
+        (backup_dir / detach.MANIFEST_FILE).write_text(json.dumps(manifest))
+
+        success, _ = detach.restore_backup(self.project_dir)
+        self.assertFalse(success)
+
+    def test_restore_rejects_unsupported_manifest_version(self):
+        """Should reject manifest with unsupported version."""
+        backup_dir = self.project_dir / detach.BACKUP_DIR
+
+        manifest = {
+            "version": 999,  # Future version
+            "detached_at": "2024-01-01T00:00:00Z",
+            "files": [],
+            "total_size_bytes": 0,
+            "file_count": 0,
+        }
+        (backup_dir / detach.MANIFEST_FILE).write_text(json.dumps(manifest))
+
+        success, _ = detach.restore_backup(self.project_dir)
+        self.assertFalse(success)
+
+    def test_restore_rejects_invalid_manifest_structure(self):
+        """Should reject manifest with missing required keys."""
+        backup_dir = self.project_dir / detach.BACKUP_DIR
+
+        # Missing required keys
+        manifest = {
+            "version": 1,
+            # missing "files" and "detached_at"
+        }
+        (backup_dir / detach.MANIFEST_FILE).write_text(json.dumps(manifest))
+
+        success, _ = detach.restore_backup(self.project_dir)
+        self.assertFalse(success)
+
+
+class TestGitignoreLineMatching(unittest.TestCase):
+    """Tests for gitignore line-based matching."""
+
+    def setUp(self):
+        """Create temporary project directory."""
+        self.temp_dir = tempfile.mkdtemp()
+        self.project_dir = Path(self.temp_dir)
+
+    def tearDown(self):
+        """Clean up temporary directory."""
+        shutil.rmtree(self.temp_dir)
+
+    def test_does_not_match_comment(self):
+        """Should not match backup dir name in comment."""
+        gitignore = self.project_dir / ".gitignore"
+        gitignore.write_text(f"# Ignore {detach.BACKUP_DIR} directory\nnode_modules/\n")
+
+        detach.update_gitignore(self.project_dir)
+
+        content = gitignore.read_text()
+        # Should have added the actual entry
+        lines = [line.strip() for line in content.splitlines()]
+        self.assertIn(f"{detach.BACKUP_DIR}/", lines)
+
+    def test_does_not_match_path_substring(self):
+        """Should not match backup dir name as substring of path."""
+        gitignore = self.project_dir / ".gitignore"
+        gitignore.write_text(f"some/path/{detach.BACKUP_DIR}/other\n")
+
+        detach.update_gitignore(self.project_dir)
+
+        content = gitignore.read_text()
+        # Should have added the standalone entry
+        lines = [line.strip() for line in content.splitlines()]
+        self.assertIn(f"{detach.BACKUP_DIR}/", lines)
+
+    def test_matches_exact_entry(self):
+        """Should match exact entry and not duplicate."""
+        gitignore = self.project_dir / ".gitignore"
+        gitignore.write_text(f"{detach.BACKUP_DIR}/\n")
+
+        detach.update_gitignore(self.project_dir)
+
+        content = gitignore.read_text()
+        # Should only appear once
+        self.assertEqual(content.count(f"{detach.BACKUP_DIR}/"), 1)
+
+
+class TestBackupAtomicity(unittest.TestCase):
+    """Tests for atomic backup operations (copy-then-delete)."""
+
+    def setUp(self):
+        """Create temporary project with files."""
+        self.temp_dir = tempfile.mkdtemp()
+        self.project_dir = Path(self.temp_dir)
+
+        # Create Autocoder files (only regular files to test copy2)
+        (self.project_dir / "features.db").write_bytes(b"database content")
+        (self.project_dir / "CLAUDE.md").write_text("# Test")
+
+    def tearDown(self):
+        """Clean up temporary directory."""
+        shutil.rmtree(self.temp_dir)
+
+    def test_backup_preserves_originals_on_copy_failure(self):
+        """Should preserve originals if copy fails."""
+        files = detach.get_autocoder_files(self.project_dir)
+
+        # Mock shutil.copy2 to fail on second file
+        original_copy2 = shutil.copy2
+        call_count = [0]
+
+        def failing_copy2(src, dst):
+            call_count[0] += 1
+            if call_count[0] > 1:
+                raise OSError("Simulated copy failure")
+            return original_copy2(src, dst)
+
+        with patch('detach.shutil.copy2', side_effect=failing_copy2):
+            with self.assertRaises(OSError):
+                detach.create_backup(self.project_dir, "test", files)
+
+        # Original files should still exist
+        self.assertTrue((self.project_dir / "CLAUDE.md").exists())
+        self.assertTrue((self.project_dir / "features.db").exists())
+
+        # Backup directory should be cleaned up
+        self.assertFalse((self.project_dir / detach.BACKUP_DIR).exists())
 
 
 if __name__ == "__main__":

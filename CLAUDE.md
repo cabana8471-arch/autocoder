@@ -99,7 +99,8 @@ npm run lint     # Run ESLint
 ```bash
 ruff check .                      # Lint
 mypy .                            # Type check
-python test_security.py           # Security unit tests (163 tests)
+python test_security.py           # Security unit tests (164 tests)
+python test_detach.py             # Detach/reattach tests (53 tests)
 python test_security_integration.py  # Integration tests (9 tests)
 ```
 
@@ -133,6 +134,57 @@ Configuration in `pyproject.toml`:
 - `registry.py` - Project registry for mapping names to paths (cross-platform)
 - `parallel_orchestrator.py` - Concurrent agent execution with dependency-aware scheduling
 - `api/dependency_resolver.py` - Cycle detection (Kahn's algorithm + DFS) and dependency validation
+- `detach.py` - Project detach/reattach functionality for Claude Code integration
+
+### Project Detach/Reattach
+
+The detach feature allows temporarily removing Autocoder files from a project, enabling Claude Code to run without Autocoder restrictions on completed projects.
+
+**CLI Usage:**
+
+```bash
+# Detach project (move Autocoder files to backup)
+python detach.py my-project
+
+# Reattach project (restore files from backup)
+python detach.py --reattach my-project
+
+# Check status
+python detach.py --status my-project
+
+# List all projects with detach status
+python detach.py --list
+
+# Preview detach operation (dry run)
+python detach.py --dry-run my-project
+
+# Exclude .playwright-mcp artifacts from backup
+python detach.py --no-artifacts my-project
+```
+
+**API Endpoints:**
+
+- `GET /api/projects/{name}/detach-status` - Check if project is detached
+- `POST /api/projects/{name}/detach` - Detach project (move files to backup)
+- `POST /api/projects/{name}/reattach` - Reattach project (restore from backup)
+
+**Security Features:**
+
+- Path traversal protection during restore (validates all paths stay within project directory)
+- Copy-then-delete backup approach (atomic operations prevent data loss on partial failures)
+- Lock file with PID/timestamp for stale lock recovery
+- Manifest version validation for forward compatibility
+
+**Files backed up:**
+
+- `.autocoder/` directory
+- `prompts/` directory
+- `.playwright-mcp/` directory (unless `--no-artifacts`)
+- `features.db`, `assistant.db` (and WAL files)
+- `CLAUDE.md`, `.claude_settings.json`, `.agent.lock`
+- Generated test files (`test-*.json`, `test-*.py`, etc.)
+
+**Tests:** `test_detach.py` (53 tests including security tests)
 
 ### Project Registry
 
@@ -312,7 +364,8 @@ blocked_commands:
 
 **Files:**
 - `security.py` - Command validation logic and hardcoded blocklist
-- `test_security.py` - Unit tests for security system (136 tests)
+- `test_security.py` - Unit tests for security system (164 tests)
+- `test_detach.py` - Unit tests for detach/reattach functionality (53 tests)
 - `test_security_integration.py` - Integration tests with real hooks (9 tests)
 - `TEST_SECURITY.md` - Quick testing reference guide
 - `examples/project_allowed_commands.yaml` - Project config example (all commented by default)
