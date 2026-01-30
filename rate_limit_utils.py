@@ -45,9 +45,13 @@ def parse_retry_after(error_message: str) -> Optional[int]:
     Returns:
         Seconds to wait, or None if not parseable.
     """
+    # Patterns require explicit "seconds" or "s" unit, OR no unit at all (end of string/sentence)
+    # This prevents matching "30 minutes" or "1 hour" since those have non-seconds units
     patterns = [
-        r"retry.?after[:\s]+(\d+)\s*(?:seconds?)?",
-        r"try again in\s+(\d+)\s*(?:seconds?|s\b)",
+        r"retry.?after[:\s]+(\d+)\s*(?:seconds?|s\b)",  # Requires seconds unit
+        r"retry.?after[:\s]+(\d+)(?:\s*$|\s*[,.])",     # Or end of string/sentence
+        r"try again in\s+(\d+)\s*(?:seconds?|s\b)",     # Requires seconds unit
+        r"try again in\s+(\d+)(?:\s*$|\s*[,.])",        # Or end of string/sentence
         r"(\d+)\s*seconds?\s*(?:remaining|left|until)",
     ]
 

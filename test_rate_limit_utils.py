@@ -53,8 +53,12 @@ class TestParseRetryAfter(unittest.TestCase):
     def test_minutes_not_supported(self):
         """Test that minutes are not parsed (by design)."""
         # We only support seconds to avoid complexity
+        # These patterns should NOT match when followed by minute/hour units
         assert parse_retry_after("wait 5 minutes") is None
         assert parse_retry_after("try again in 2 minutes") is None
+        assert parse_retry_after("retry after 5 minutes") is None
+        assert parse_retry_after("retry after 1 hour") is None
+        assert parse_retry_after("try again in 30 min") is None
 
 
 class TestIsRateLimitError(unittest.TestCase):
