@@ -392,7 +392,11 @@ def handle_detach_reattach(projects: list[tuple[str, Path]]) -> None:
     while True:
         display_detach_menu(projects)
 
-        choice = input("Select project number: ").strip().lower()
+        try:
+            choice = input("Select project number: ").strip().lower()
+        except KeyboardInterrupt:
+            print("\n\nCancelled.")
+            return
 
         if choice == 'b':
             return
@@ -419,7 +423,11 @@ def handle_project_detach_action(project_name: str, project_path: Path) -> None:
     if is_detached:
         # Offer to reattach
         print("\nThis project is detached. Autocoder files are in backup.")
-        confirm = input("Reattach project (restore files)? [y/N]: ").strip().lower()
+        try:
+            confirm = input("Reattach project (restore files)? [y/N]: ").strip().lower()
+        except KeyboardInterrupt:
+            print("\n\nCancelled.")
+            return
         if confirm == 'y':
             print("\nReattaching...")
             success, message, _ = detach_module.reattach_project(project_name)
@@ -428,13 +436,21 @@ def handle_project_detach_action(project_name: str, project_path: Path) -> None:
         # Offer to detach
         print("\nThis project is attached. Autocoder files are present.")
         print("Detaching will move files to backup and allow Claude Code full access.")
-        confirm = input("Detach project? [y/N]: ").strip().lower()
+        try:
+            confirm = input("Detach project? [y/N]: ").strip().lower()
+        except KeyboardInterrupt:
+            print("\n\nCancelled.")
+            return
         if confirm == 'y':
             print("\nDetaching...")
             success, message, manifest = detach_module.detach_project(project_name)
             print(f"  {message}")
 
-    input("\nPress Enter to continue...")
+    try:
+        input("\nPress Enter to continue...")
+    except KeyboardInterrupt:
+        print("\n\nCancelled.")
+        return
 
 
 def run_agent(project_name: str, project_dir: Path) -> None:

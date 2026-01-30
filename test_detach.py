@@ -512,6 +512,20 @@ class TestReattachProject(unittest.TestCase):
         self.assertFalse(success)
         self.assertIn("No backup found", message)
 
+    @patch('detach.get_project_path')
+    def test_reattach_fails_when_agent_running(self, mock_get_path):
+        """Should fail if agent lock exists."""
+        mock_get_path.return_value = self.project_dir
+
+        # Create agent lock file
+        (self.project_dir / ".agent.lock").touch()
+
+        success, message, files_restored = detach.reattach_project("test-project")
+
+        self.assertFalse(success)
+        self.assertIn("Agent is currently running", message)
+        self.assertEqual(files_restored, 0)
+
 
 class TestGitignoreUpdate(unittest.TestCase):
     """Tests for update_gitignore function."""

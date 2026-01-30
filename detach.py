@@ -582,6 +582,11 @@ def reattach_project(name_or_path: str) -> tuple[bool, str, int]:
 
     project_dir = Path(project_dir).resolve()
 
+    # Check for agent lock - don't reattach while agent is running
+    agent_lock = project_dir / ".agent.lock"
+    if agent_lock.exists():
+        return False, "Agent is currently running. Stop the agent first.", 0
+
     # Check if backup exists
     if not has_backup(project_dir):
         return False, "No backup found. Project is not detached.", 0
