@@ -143,11 +143,11 @@ class ParallelOrchestrator:
         self,
         project_dir: Path,
         max_concurrency: int = DEFAULT_CONCURRENCY,
-        model: str = None,
+        model: str | None = None,
         yolo_mode: bool = False,
         testing_agent_ratio: int = 1,
-        on_output: Callable[[int, str], None] = None,
-        on_status: Callable[[int, str], None] = None,
+        on_output: Callable[[int, str], None] | None = None,
+        on_status: Callable[[int, str], None] | None = None,
     ):
         """Initialize the orchestrator.
 
@@ -184,14 +184,18 @@ class ParallelOrchestrator:
         # Track feature failures to prevent infinite retry loops
         self._failure_counts: dict[int, int] = {}
 
+        # Shutdown flag for async-safe signal handling
+        # Signal handlers only set this flag; cleanup happens in the main loop
+        self._shutdown_requested = False
+
         # Session tracking for logging/debugging
-        self.session_start_time: datetime = None
+        self.session_start_time: datetime | None = None
 
         # Event signaled when any agent completes, allowing the main loop to wake
         # immediately instead of waiting for the full POLL_INTERVAL timeout.
         # This reduces latency when spawning the next feature after completion.
-        self._agent_completed_event: asyncio.Event = None  # Created in run_loop
-        self._event_loop: asyncio.AbstractEventLoop = None  # Stored for thread-safe signaling
+        self._agent_completed_event: asyncio.Event | None = None  # Created in run_loop
+        self._event_loop: asyncio.AbstractEventLoop | None = None  # Stored for thread-safe signaling
 
         # Database session for this orchestrator
         self._engine, self._session_maker = create_database(project_dir)
@@ -377,7 +381,8 @@ class ParallelOrchestrator:
         session = self.get_session()
         try:
             session.expire_all()
-            return session.query(Feature).filter(Feature.passes == True).count()
+            count: int = session.query(Feature).filter(Feature.passes == True).count()
+            return count
         finally:
             session.close()
 
@@ -539,7 +544,7 @@ class ParallelOrchestrator:
             daemon=True
         ).start()
 
-        if self.on_status:
+        if self.on_status is not None:
             self.on_status(feature_id, "running")
 
         print(f"Started coding agent for feature #{feature_id}", flush=True)
@@ -696,11 +701,14 @@ class ParallelOrchestrator:
     ):
         """Read output from subprocess and emit events."""
         try:
+            if proc.stdout is None:
+                proc.wait()
+                return
             for line in proc.stdout:
                 if abort.is_set():
                     break
                 line = line.rstrip()
-                if self.on_output:
+                if self.on_output is not None:
                     self.on_output(feature_id or 0, line)
                 else:
                     # Both coding and testing agents now use [Feature #X] format
@@ -792,6 +800,9 @@ class ParallelOrchestrator:
             return
 
         # Coding agent completion
+        # feature_id is required for coding agents (always passed from start_feature)
+        assert feature_id is not None, "feature_id must not be None for coding agents"
+
         debug_log.log("COMPLETE", f"Coding agent for feature #{feature_id} finished",
             return_code=return_code,
             status="success" if return_code == 0 else "failed")
@@ -832,7 +843,7 @@ class ParallelOrchestrator:
                     failure_count=failure_count)
 
         status = "completed" if return_code == 0 else "failed"
-        if self.on_status:
+        if self.on_status is not None:
             self.on_status(feature_id, status)
         # CRITICAL: This print triggers the WebSocket to emit agent_update with state='error' or 'success'
         print(f"Feature #{feature_id} {status}", flush=True)
@@ -986,7 +997,7 @@ class ParallelOrchestrator:
 
         debug_log.section("FEATURE LOOP STARTING")
         loop_iteration = 0
-        while self.is_running:
+        while self.is_running and not self._shutdown_requested:
             loop_iteration += 1
             if loop_iteration <= 3:
                 print(f"[DEBUG] === Loop iteration {loop_iteration} ===", flush=True)
@@ -1136,35 +1147,45 @@ class ParallelOrchestrator:
             }
 
     def cleanup(self) -> None:
-        """Clean up database resources.
+        """Clean up database resources. Safe to call multiple times.
 
         CRITICAL: Must be called when orchestrator exits to prevent database corruption.
         - Forces WAL checkpoint to flush pending writes to main database file
         - Disposes engine to close all connections
 
         This prevents stale cache issues when the orchestrator restarts.
-        """
-        if self._engine is not None:
-            try:
-                debug_log.log("CLEANUP", "Forcing WAL checkpoint before dispose")
-                with self._engine.connect() as conn:
-                    conn.execute(text("PRAGMA wal_checkpoint(FULL)"))
-                    conn.commit()
-                debug_log.log("CLEANUP", "WAL checkpoint completed, disposing engine")
-            except Exception as e:
-                debug_log.log("CLEANUP", f"WAL checkpoint failed (non-fatal): {e}")
 
-            try:
-                self._engine.dispose()
-                debug_log.log("CLEANUP", "Engine disposed successfully")
-            except Exception as e:
-                debug_log.log("CLEANUP", f"Engine dispose failed: {e}")
+        Idempotency: Sets _engine=None FIRST to prevent re-entry, then performs
+        cleanup operations. This is important because cleanup() can be called
+        from multiple paths (signal handler flag, finally block, atexit handler).
+        """
+        # Atomically grab and clear the engine reference to prevent re-entry
+        engine = self._engine
+        self._engine = None
+
+        if engine is None:
+            return  # Already cleaned up
+
+        try:
+            debug_log.log("CLEANUP", "Forcing WAL checkpoint before dispose")
+            with engine.connect() as conn:
+                conn.execute(text("PRAGMA wal_checkpoint(FULL)"))
+                conn.commit()
+            debug_log.log("CLEANUP", "WAL checkpoint completed, disposing engine")
+        except Exception as e:
+            debug_log.log("CLEANUP", f"WAL checkpoint failed (non-fatal): {e}")
+
+        try:
+            engine.dispose()
+            debug_log.log("CLEANUP", "Engine disposed successfully")
+        except Exception as e:
+            debug_log.log("CLEANUP", f"Engine dispose failed: {e}")
 
 
 async def run_parallel_orchestrator(
     project_dir: Path,
     max_concurrency: int = DEFAULT_CONCURRENCY,
-    model: str = None,
+    model: str | None = None,
     yolo_mode: bool = False,
     testing_agent_ratio: int = 1,
 ) -> None:
@@ -1188,22 +1209,30 @@ async def run_parallel_orchestrator(
 
     # Set up cleanup to run on exit (handles normal exit, exceptions, signals)
     def cleanup_handler():
-        debug_log.log("CLEANUP", "Cleanup handler invoked")
+        debug_log.log("CLEANUP", "atexit cleanup handler invoked")
         orchestrator.cleanup()
 
     atexit.register(cleanup_handler)
 
-    # Set up signal handlers for graceful shutdown (SIGTERM, SIGINT)
+    # Set up async-safe signal handler for graceful shutdown
+    # IMPORTANT: Signal handlers run in the main thread's context and must be async-safe.
+    # Only setting flags is safe; file I/O, locks, and subprocess operations are NOT safe.
     def signal_handler(signum, frame):
-        debug_log.log("SIGNAL", f"Received signal {signum}, initiating cleanup")
-        print(f"\nReceived signal {signum}. Stopping agents...", flush=True)
-        orchestrator.stop_all()
-        orchestrator.cleanup()
-        sys.exit(0)
+        # Only set flags - everything else is unsafe in signal context
+        # The main loop checks _shutdown_requested and handles cleanup on safe code path
+        orchestrator._shutdown_requested = True
+        orchestrator.is_running = False
+        # Note: Don't call stop_all(), cleanup(), or sys.exit() here - those are unsafe
+        # The finally block and atexit handler will perform cleanup
 
-    # Register signal handlers (SIGTERM for process termination, SIGINT for Ctrl+C)
+    # Register SIGTERM handler for process termination signals
+    # Note: On Windows, SIGTERM works but subprocess termination behavior differs.
+    # Windows uses CTRL_C_EVENT/CTRL_BREAK_EVENT instead of Unix signals.
+    # The kill_process_tree() in process_utils.py handles this via psutil.
     signal.signal(signal.SIGTERM, signal_handler)
-    signal.signal(signal.SIGINT, signal_handler)
+
+    # Note: We intentionally do NOT register SIGINT handler
+    # Let Python raise KeyboardInterrupt naturally so the except block works
 
     try:
         await orchestrator.run_loop()

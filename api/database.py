@@ -8,7 +8,7 @@ SQLite database schema for feature storage using SQLAlchemy.
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Generator, Optional
 
 
 def _utc_now() -> datetime:
@@ -26,13 +26,16 @@ from sqlalchemy import (
     String,
     Text,
     create_engine,
+    event,
     text,
 )
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import Session, relationship, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Session, relationship, sessionmaker
 from sqlalchemy.types import JSON
 
-Base = declarative_base()
+
+class Base(DeclarativeBase):
+    """SQLAlchemy 2.0 style declarative base."""
+    pass
 
 
 class Feature(Base):
@@ -307,11 +310,11 @@ def _migrate_add_schedules_tables(engine) -> None:
 
     # Create schedules table if missing
     if "schedules" not in existing_tables:
-        Schedule.__table__.create(bind=engine)
+        Schedule.__table__.create(bind=engine)  # type: ignore[attr-defined]
 
     # Create schedule_overrides table if missing
     if "schedule_overrides" not in existing_tables:
-        ScheduleOverride.__table__.create(bind=engine)
+        ScheduleOverride.__table__.create(bind=engine)  # type: ignore[attr-defined]
 
     # Add crash_count column if missing (for upgrades)
     if "schedules" in existing_tables:
@@ -332,6 +335,41 @@ def _migrate_add_schedules_tables(engine) -> None:
                 conn.commit()
 
 
+def _configure_sqlite_immediate_transactions(engine) -> None:
+    """Configure engine for IMMEDIATE transactions via event hooks.
+
+    Per SQLAlchemy docs: https://docs.sqlalchemy.org/en/20/dialects/sqlite.html
+
+    This replaces fragile pysqlite implicit transaction handling with explicit
+    BEGIN IMMEDIATE at transaction start. Benefits:
+    - Acquires write lock immediately, preventing stale reads
+    - Works correctly regardless of prior ORM operations
+    - Future-proof: won't break when pysqlite legacy mode is removed in Python 3.16
+
+    Note: We only use IMMEDIATE for user transactions, not for PRAGMA statements.
+    The do_begin hook only fires when SQLAlchemy starts a transaction, which
+    doesn't happen for PRAGMA commands when using conn.exec_driver_sql() directly.
+    """
+    @event.listens_for(engine, "connect")
+    def do_connect(dbapi_connection, connection_record):
+        # Disable pysqlite's implicit transaction handling
+        dbapi_connection.isolation_level = None
+
+        # Execute PRAGMAs immediately on raw connection before any transactions
+        # This is safe because isolation_level=None means no implicit transactions
+        cursor = dbapi_connection.cursor()
+        try:
+            # These PRAGMAs need to run outside of any transaction
+            cursor.execute("PRAGMA busy_timeout=30000")
+        finally:
+            cursor.close()
+
+    @event.listens_for(engine, "begin")
+    def do_begin(conn):
+        # Use IMMEDIATE for all transactions to prevent stale reads
+        conn.exec_driver_sql("BEGIN IMMEDIATE")
+
+
 def create_database(project_dir: Path) -> tuple:
     """
     Create database and return engine + session maker.
@@ -343,21 +381,37 @@ def create_database(project_dir: Path) -> tuple:
         Tuple of (engine, SessionLocal)
     """
     db_url = get_database_url(project_dir)
-    engine = create_engine(db_url, connect_args={
-        "check_same_thread": False,
-        "timeout": 30  # Wait up to 30s for locks
-    })
-    Base.metadata.create_all(bind=engine)
 
     # Choose journal mode based on filesystem type
     # WAL mode doesn't work reliably on network filesystems and can cause corruption
     is_network = _is_network_path(project_dir)
     journal_mode = "DELETE" if is_network else "WAL"
 
+    engine = create_engine(db_url, connect_args={
+        "check_same_thread": False,
+        "timeout": 30  # Wait up to 30s for locks
+    })
+
+    # Set journal mode BEFORE configuring event hooks
+    # PRAGMA journal_mode must run outside of a transaction, and our event hooks
+    # start a transaction with BEGIN IMMEDIATE on every operation
     with engine.connect() as conn:
-        conn.execute(text(f"PRAGMA journal_mode={journal_mode}"))
-        conn.execute(text("PRAGMA busy_timeout=30000"))
-        conn.commit()
+        # Get raw DBAPI connection to execute PRAGMA outside transaction
+        raw_conn = conn.connection.dbapi_connection
+        if raw_conn is None:
+            raise RuntimeError("Failed to get raw DBAPI connection")
+        cursor = raw_conn.cursor()
+        try:
+            cursor.execute(f"PRAGMA journal_mode={journal_mode}")
+            cursor.execute("PRAGMA busy_timeout=30000")
+        finally:
+            cursor.close()
+
+    # Configure IMMEDIATE transactions via event hooks AFTER setting PRAGMAs
+    # This must happen before create_all() and migrations run
+    _configure_sqlite_immediate_transactions(engine)
+
+    Base.metadata.create_all(bind=engine)
 
     # Migrate existing databases
     _migrate_add_in_progress_column(engine)
@@ -382,7 +436,7 @@ def set_session_maker(session_maker: sessionmaker) -> None:
     _session_maker = session_maker
 
 
-def get_db() -> Session:
+def get_db() -> Generator[Session, None, None]:
     """
     Dependency for FastAPI to get database session.
 
@@ -414,15 +468,20 @@ from contextlib import contextmanager
 def atomic_transaction(session_maker, isolation_level: str = "IMMEDIATE"):
     """Context manager for atomic SQLite transactions.
 
-    Uses BEGIN IMMEDIATE to acquire a write lock immediately, preventing
+    Acquires a write lock immediately via BEGIN IMMEDIATE, preventing
     stale reads in read-modify-write patterns. This is essential for
     preventing race conditions in parallel mode.
+
+    Note: The engine is configured via _configure_sqlite_immediate_transactions()
+    to use BEGIN IMMEDIATE for all transactions. The isolation_level parameter
+    is kept for backwards compatibility and for EXCLUSIVE transactions when
+    blocking readers is required.
 
     Args:
         session_maker: SQLAlchemy sessionmaker
         isolation_level: "IMMEDIATE" (default) or "EXCLUSIVE"
-            - IMMEDIATE: Acquires write lock at transaction start
-            - EXCLUSIVE: Also blocks other readers (rarely needed)
+            - IMMEDIATE: Acquires write lock at transaction start (default via event hooks)
+            - EXCLUSIVE: Also blocks other readers (requires explicit BEGIN EXCLUSIVE)
 
     Yields:
         SQLAlchemy session with automatic commit/rollback
@@ -436,167 +495,29 @@ def atomic_transaction(session_maker, isolation_level: str = "IMMEDIATE"):
     """
     session = session_maker()
     try:
-        # Start transaction with write lock
-        session.execute(text(f"BEGIN {isolation_level}"))
+        # For EXCLUSIVE mode, override the default IMMEDIATE from event hooks
+        # For IMMEDIATE mode, the event hooks handle BEGIN IMMEDIATE automatically
+        if isolation_level == "EXCLUSIVE":
+            session.execute(text("BEGIN EXCLUSIVE"))
+        # Note: For IMMEDIATE, we don't issue BEGIN here - the event hook handles it
+        # This prevents the fragile "BEGIN on already-begun transaction" issue
         yield session
         session.commit()
     except Exception:
-        session.rollback()
+        try:
+            session.rollback()
+        except Exception:
+            pass  # Don't let rollback failure mask original error
         raise
     finally:
         session.close()
 
 
-def atomic_claim_feature(session_maker, feature_id: int) -> dict:
-    """Atomically claim a feature for implementation.
-
-    Uses atomic UPDATE ... WHERE to prevent race conditions where two agents
-    try to claim the same feature simultaneously.
-
-    Args:
-        session_maker: SQLAlchemy sessionmaker
-        feature_id: ID of the feature to claim
-
-    Returns:
-        Dict with:
-        - success: True if claimed, False if already claimed/passing/not found
-        - feature: Feature dict if claimed successfully
-        - error: Error message if not claimed
-    """
-    session = session_maker()
-    try:
-        # Atomic claim: only succeeds if feature is not already claimed or passing
-        result = session.execute(text("""
-            UPDATE features
-            SET in_progress = 1
-            WHERE id = :id AND passes = 0 AND in_progress = 0
-        """), {"id": feature_id})
-        session.commit()
-
-        if result.rowcount == 0:
-            # Check why the claim failed
-            feature = session.query(Feature).filter(Feature.id == feature_id).first()
-            if feature is None:
-                return {"success": False, "error": f"Feature {feature_id} not found"}
-            if feature.passes:
-                return {"success": False, "error": f"Feature {feature_id} already passing"}
-            if feature.in_progress:
-                return {"success": False, "error": f"Feature {feature_id} already in progress"}
-            return {"success": False, "error": "Claim failed for unknown reason"}
-
-        # Fetch the claimed feature
-        feature = session.query(Feature).filter(Feature.id == feature_id).first()
-        return {"success": True, "feature": feature.to_dict()}
-    finally:
-        session.close()
-
-
-def atomic_mark_passing(session_maker, feature_id: int) -> dict:
-    """Atomically mark a feature as passing.
-
-    Uses atomic UPDATE to ensure consistency.
-
-    Args:
-        session_maker: SQLAlchemy sessionmaker
-        feature_id: ID of the feature to mark passing
-
-    Returns:
-        Dict with success status and feature name
-    """
-    session = session_maker()
-    try:
-        # First get the feature name for the response
-        feature = session.query(Feature).filter(Feature.id == feature_id).first()
-        if feature is None:
-            return {"success": False, "error": f"Feature {feature_id} not found"}
-
-        name = feature.name
-
-        # Atomic update
-        session.execute(text("""
-            UPDATE features
-            SET passes = 1, in_progress = 0
-            WHERE id = :id
-        """), {"id": feature_id})
-        session.commit()
-
-        return {"success": True, "feature_id": feature_id, "name": name}
-    except Exception as e:
-        session.rollback()
-        return {"success": False, "error": str(e)}
-    finally:
-        session.close()
-
-
-def atomic_update_priority_to_end(session_maker, feature_id: int) -> dict:
-    """Atomically move a feature to the end of the queue.
-
-    Uses a subquery to atomically calculate MAX(priority) + 1 and update
-    in a single statement, preventing race conditions where two features
-    get the same priority.
-
-    Args:
-        session_maker: SQLAlchemy sessionmaker
-        feature_id: ID of the feature to move
-
-    Returns:
-        Dict with old_priority and new_priority
-    """
-    session = session_maker()
-    try:
-        # First get current state
-        feature = session.query(Feature).filter(Feature.id == feature_id).first()
-        if feature is None:
-            return {"success": False, "error": f"Feature {feature_id} not found"}
-        if feature.passes:
-            return {"success": False, "error": "Cannot skip a feature that is already passing"}
-
-        old_priority = feature.priority
-
-        # Atomic update: set priority to max+1 in a single statement
-        # This prevents race conditions where two features get the same priority
-        session.execute(text("""
-            UPDATE features
-            SET priority = (SELECT COALESCE(MAX(priority), 0) + 1 FROM features),
-                in_progress = 0
-            WHERE id = :id
-        """), {"id": feature_id})
-        session.commit()
-
-        # Fetch the new priority
-        session.refresh(feature)
-        new_priority = feature.priority
-
-        return {
-            "success": True,
-            "id": feature_id,
-            "name": feature.name,
-            "old_priority": old_priority,
-            "new_priority": new_priority,
-        }
-    except Exception as e:
-        session.rollback()
-        return {"success": False, "error": str(e)}
-    finally:
-        session.close()
-
-
-def atomic_get_next_priority(session_maker) -> int:
-    """Atomically get the next available priority.
-
-    Uses a transaction to ensure consistent reads.
-
-    Args:
-        session_maker: SQLAlchemy sessionmaker
-
-    Returns:
-        Next priority value (max + 1, or 1 if no features exist)
-    """
-    session = session_maker()
-    try:
-        result = session.execute(text("""
-            SELECT COALESCE(MAX(priority), 0) + 1 FROM features
-        """)).fetchone()
-        return result[0]
-    finally:
-        session.close()
+# Note: The following functions were removed as dead code (never imported/called):
+# - atomic_claim_feature()
+# - atomic_mark_passing()
+# - atomic_update_priority_to_end()
+# - atomic_get_next_priority()
+#
+# The MCP server reimplements this logic inline with proper atomic UPDATE WHERE
+# clauses. See mcp_server/feature_mcp.py for the actual implementation.

@@ -67,8 +67,8 @@ def has_features(project_dir: Path) -> bool:
         with closing(_get_connection(db_file)) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT COUNT(*) FROM features")
-            count = cursor.fetchone()[0]
-            return count > 0
+            count: int = cursor.fetchone()[0]
+            return bool(count > 0)
     except Exception:
         # Database exists but can't be read or has no features table
         return False
