@@ -23,6 +23,7 @@ Log Format:
 }
 """
 
+import hashlib
 import json
 import logging
 import sqlite3
@@ -30,11 +31,33 @@ import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 # Type aliases
 # Note: Python's logging uses "warning" but we normalize to "warn" for consistency
 LogLevel = Literal["debug", "info", "warn", "warning", "error"]
+
+
+def _format_ts(dt: datetime) -> str:
+    """
+    Format a datetime to ISO 8601 string with UTC "Z" suffix.
+
+    Ensures timezone-aware datetimes are converted to UTC first.
+    Naive datetimes are assumed to be UTC and get tzinfo set.
+
+    Args:
+        dt: Datetime to format
+
+    Returns:
+        ISO 8601 string with "Z" suffix (e.g., "2025-01-21T10:30:00.000Z")
+    """
+    if dt.tzinfo is None:
+        # Treat naive datetimes as UTC
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        # Convert to UTC if timezone-aware
+        dt = dt.astimezone(timezone.utc)
+    return dt.isoformat().replace("+00:00", "Z")
 
 
 @dataclass
@@ -48,9 +71,9 @@ class StructuredLogEntry:
     feature_id: Optional[int] = None
     tool_name: Optional[str] = None
     duration_ms: Optional[int] = None
-    extra: dict = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary, excluding None values."""
         result = {
             "timestamp": self.timestamp,
@@ -92,6 +115,8 @@ class StructuredLogHandler(logging.Handler):
         self.agent_id = agent_id
         self.max_entries = max_entries
         self._lock = threading.Lock()
+        self._insert_count = 0
+        self._cleanup_interval = 100  # Run cleanup every N inserts
         self._init_database()
 
     def _init_database(self) -> None:
@@ -149,7 +174,7 @@ class StructuredLogHandler(logging.Handler):
             if level == "warning":
                 level = "warn"
             entry = StructuredLogEntry(
-                timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                timestamp=_format_ts(datetime.now(timezone.utc)),
                 level=level,
                 message=self.format(record),
                 agent_id=getattr(record, "agent_id", self.agent_id),
@@ -182,19 +207,22 @@ class StructuredLogHandler(logging.Handler):
                         ),
                     )
 
-                    # Cleanup old entries if over limit
-                    cursor.execute("SELECT COUNT(*) FROM logs")
-                    count = cursor.fetchone()[0]
-                    if count > self.max_entries:
-                        delete_count = count - self.max_entries
-                        cursor.execute(
-                            """
-                            DELETE FROM logs WHERE id IN (
-                                SELECT id FROM logs ORDER BY timestamp ASC LIMIT ?
+                    # Cleanup old entries periodically (not on every insert)
+                    self._insert_count += 1
+                    if self._insert_count >= self._cleanup_interval:
+                        self._insert_count = 0
+                        cursor.execute("SELECT COUNT(*) FROM logs")
+                        count = cursor.fetchone()[0]
+                        if count > self.max_entries:
+                            delete_count = count - self.max_entries
+                            cursor.execute(
+                                """
+                                DELETE FROM logs WHERE id IN (
+                                    SELECT id FROM logs ORDER BY timestamp ASC LIMIT ?
+                                )
+                                """,
+                                (delete_count,),
                             )
-                            """,
-                            (delete_count,),
-                        )
 
                     conn.commit()
 
@@ -227,7 +255,6 @@ class StructuredLogger:
 
         # Setup logger with unique name per instance to avoid handler accumulation
         # across tests and multiple invocations. Include project path hash for uniqueness.
-        import hashlib
         path_hash = hashlib.md5(str(self.project_dir).encode()).hexdigest()[:8]
         logger_name = f"autocoder.{agent_id or 'main'}.{path_hash}.{id(self)}"
         self.logger = logging.getLogger(logger_name)
@@ -340,59 +367,57 @@ class LogQuery:
         Returns:
             List of log entries as dicts
         """
-        conn = self._connect()
-        cursor = conn.cursor()
+        with self._connect() as conn:
+            cursor = conn.cursor()
 
-        conditions = []
-        params = []
+            conditions = []
+            params = []
 
-        if level:
-            conditions.append("level = ?")
-            params.append(level)
+            if level:
+                conditions.append("level = ?")
+                params.append(level)
 
-        if agent_id:
-            conditions.append("agent_id = ?")
-            params.append(agent_id)
+            if agent_id:
+                conditions.append("agent_id = ?")
+                params.append(agent_id)
 
-        if feature_id is not None:
-            conditions.append("feature_id = ?")
-            params.append(feature_id)
+            if feature_id is not None:
+                conditions.append("feature_id = ?")
+                params.append(feature_id)
 
-        if tool_name:
-            conditions.append("tool_name = ?")
-            params.append(tool_name)
+            if tool_name:
+                conditions.append("tool_name = ?")
+                params.append(tool_name)
 
-        if search:
-            conditions.append("message LIKE ?")
-            # Escape LIKE wildcards to prevent unexpected query behavior
-            escaped_search = search.replace("%", "\\%").replace("_", "\\_")
-            params.append(f"%{escaped_search}%")
+            if search:
+                conditions.append("message LIKE ? ESCAPE '\\'")
+                # Escape LIKE wildcards to prevent unexpected query behavior
+                # Escape backslash FIRST, then LIKE wildcards
+                escaped_search = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                params.append(f"%{escaped_search}%")
 
-        if since:
-            conditions.append("timestamp >= ?")
-            # Use consistent timestamp format with stored logs (Z suffix for UTC)
-            params.append(since.isoformat().replace("+00:00", "Z"))
+            if since:
+                conditions.append("timestamp >= ?")
+                params.append(_format_ts(since))
 
-        if until:
-            conditions.append("timestamp <= ?")
-            # Use consistent timestamp format with stored logs (Z suffix for UTC)
-            params.append(until.isoformat().replace("+00:00", "Z"))
+            if until:
+                conditions.append("timestamp <= ?")
+                params.append(_format_ts(until))
 
-        where_clause = " AND ".join(conditions) if conditions else "1=1"
+            where_clause = " AND ".join(conditions) if conditions else "1=1"
 
-        query = f"""
-            SELECT * FROM logs
-            WHERE {where_clause}
-            ORDER BY timestamp DESC
-            LIMIT ? OFFSET ?
-        """
-        params.extend([limit, offset])
+            query = f"""
+                SELECT * FROM logs
+                WHERE {where_clause}
+                ORDER BY timestamp DESC
+                LIMIT ? OFFSET ?
+            """
+            params.extend([limit, offset])
 
-        cursor.execute(query, params)
-        rows = cursor.fetchall()
-        conn.close()
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
 
-        return [dict(row) for row in rows]
+            return [dict(row) for row in rows]
 
     def count(
         self,
@@ -402,31 +427,28 @@ class LogQuery:
         since: Optional[datetime] = None,
     ) -> int:
         """Count logs matching filters."""
-        conn = self._connect()
-        cursor = conn.cursor()
+        with self._connect() as conn:
+            cursor = conn.cursor()
 
-        conditions = []
-        params = []
+            conditions = []
+            params = []
 
-        if level:
-            conditions.append("level = ?")
-            params.append(level)
-        if agent_id:
-            conditions.append("agent_id = ?")
-            params.append(agent_id)
-        if feature_id is not None:
-            conditions.append("feature_id = ?")
-            params.append(feature_id)
-        if since:
-            conditions.append("timestamp >= ?")
-            # Use consistent timestamp format with stored logs (Z suffix for UTC)
-            params.append(since.isoformat().replace("+00:00", "Z"))
+            if level:
+                conditions.append("level = ?")
+                params.append(level)
+            if agent_id:
+                conditions.append("agent_id = ?")
+                params.append(agent_id)
+            if feature_id is not None:
+                conditions.append("feature_id = ?")
+                params.append(feature_id)
+            if since:
+                conditions.append("timestamp >= ?")
+                params.append(_format_ts(since))
 
-        where_clause = " AND ".join(conditions) if conditions else "1=1"
-        cursor.execute(f"SELECT COUNT(*) FROM logs WHERE {where_clause}", params)
-        count = cursor.fetchone()[0]
-        conn.close()
-        return count
+            where_clause = " AND ".join(conditions) if conditions else "1=1"
+            cursor.execute(f"SELECT COUNT(*) FROM logs WHERE {where_clause}", params)
+            return cursor.fetchone()[0]
 
     def get_timeline(
         self,
@@ -439,33 +461,32 @@ class LogQuery:
 
         Returns list of buckets with counts per agent.
         """
-        conn = self._connect()
-        cursor = conn.cursor()
-
         # Default to last 24 hours
         if not since:
             since = datetime.now(timezone.utc) - timedelta(hours=24)
         if not until:
             until = datetime.now(timezone.utc)
 
-        cursor.execute(
-            """
-            SELECT
-                strftime('%Y-%m-%d %H:', timestamp) ||
-                printf('%02d', (CAST(strftime('%M', timestamp) AS INTEGER) / ?) * ?) || ':00' as bucket,
-                agent_id,
-                COUNT(*) as count,
-                SUM(CASE WHEN level = 'error' THEN 1 ELSE 0 END) as errors
-            FROM logs
-            WHERE timestamp >= ? AND timestamp <= ?
-            GROUP BY bucket, agent_id
-            ORDER BY bucket
-            """,
-            (bucket_minutes, bucket_minutes, since.isoformat().replace("+00:00", "Z"), until.isoformat().replace("+00:00", "Z")),
-        )
+        with self._connect() as conn:
+            cursor = conn.cursor()
 
-        rows = cursor.fetchall()
-        conn.close()
+            cursor.execute(
+                """
+                SELECT
+                    strftime('%Y-%m-%d %H:', timestamp) ||
+                    printf('%02d', (CAST(strftime('%M', timestamp) AS INTEGER) / ?) * ?) || ':00' as bucket,
+                    agent_id,
+                    COUNT(*) as count,
+                    SUM(CASE WHEN level = 'error' THEN 1 ELSE 0 END) as errors
+                FROM logs
+                WHERE timestamp >= ? AND timestamp <= ?
+                GROUP BY bucket, agent_id
+                ORDER BY bucket
+                """,
+                (bucket_minutes, bucket_minutes, _format_ts(since), _format_ts(until)),
+            )
+
+            rows = cursor.fetchall()
 
         # Group by bucket
         buckets = {}
@@ -482,37 +503,44 @@ class LogQuery:
 
     def get_agent_stats(self, since: Optional[datetime] = None) -> list[dict]:
         """Get log statistics per agent."""
-        conn = self._connect()
-        cursor = conn.cursor()
-
         params = []
         where_clause = "1=1"
         if since:
             where_clause = "timestamp >= ?"
-            # Use consistent timestamp format with stored logs (Z suffix for UTC)
-            params.append(since.isoformat().replace("+00:00", "Z"))
+            params.append(_format_ts(since))
 
-        cursor.execute(
-            f"""
-            SELECT
-                agent_id,
-                COUNT(*) as total,
-                SUM(CASE WHEN level = 'info' THEN 1 ELSE 0 END) as info_count,
-                SUM(CASE WHEN level = 'warn' OR level = 'warning' THEN 1 ELSE 0 END) as warn_count,
-                SUM(CASE WHEN level = 'error' THEN 1 ELSE 0 END) as error_count,
-                MIN(timestamp) as first_log,
-                MAX(timestamp) as last_log
-            FROM logs
-            WHERE {where_clause}
-            GROUP BY agent_id
-            ORDER BY total DESC
-            """,
-            params,
-        )
+        with self._connect() as conn:
+            cursor = conn.cursor()
 
-        rows = cursor.fetchall()
-        conn.close()
-        return [dict(row) for row in rows]
+            cursor.execute(
+                f"""
+                SELECT
+                    agent_id,
+                    COUNT(*) as total,
+                    SUM(CASE WHEN level = 'info' THEN 1 ELSE 0 END) as info_count,
+                    SUM(CASE WHEN level = 'warn' OR level = 'warning' THEN 1 ELSE 0 END) as warn_count,
+                    SUM(CASE WHEN level = 'error' THEN 1 ELSE 0 END) as error_count,
+                    MIN(timestamp) as first_log,
+                    MAX(timestamp) as last_log
+                FROM logs
+                WHERE {where_clause}
+                GROUP BY agent_id
+                ORDER BY total DESC
+                """,
+                params,
+            )
+
+            rows = cursor.fetchall()
+
+        # Normalize timestamps to use "Z" suffix for UTC consistency
+        results = [dict(row) for row in rows]
+        for entry in results:
+            if entry.get("first_log"):
+                entry["first_log"] = entry["first_log"].replace("+00:00", "Z")
+            if entry.get("last_log"):
+                entry["last_log"] = entry["last_log"].replace("+00:00", "Z")
+
+        return results
 
     def _iter_logs(
         self,
@@ -545,7 +573,7 @@ class LogQuery:
     def export_logs(
         self,
         output_path: Path,
-        format: Literal["json", "jsonl", "csv"] = "jsonl",
+        output_format: Literal["json", "jsonl", "csv"] = "jsonl",
         batch_size: int = 1000,
         **filters,
     ) -> int:
@@ -554,7 +582,7 @@ class LogQuery:
 
         Args:
             output_path: Output file path
-            format: Export format (json, jsonl, csv)
+            output_format: Export format (json, jsonl, csv)
             batch_size: Number of rows to fetch per batch (default 1000)
             **filters: Query filters
 
@@ -568,7 +596,7 @@ class LogQuery:
 
         count = 0
 
-        if format == "json":
+        if output_format == "json":
             # For JSON format, we still need to collect all to produce valid JSON
             # but we stream to avoid massive single query
             with open(output_path, "w") as f:
@@ -582,13 +610,13 @@ class LogQuery:
                     count += 1
                 f.write("\n]")
 
-        elif format == "jsonl":
+        elif output_format == "jsonl":
             with open(output_path, "w") as f:
                 for log in self._iter_logs(batch_size=batch_size, **filters):
                     f.write(json.dumps(log) + "\n")
                     count += 1
 
-        elif format == "csv":
+        elif output_format == "csv":
             fieldnames = None
             with open(output_path, "w", newline="") as f:
                 writer = None
