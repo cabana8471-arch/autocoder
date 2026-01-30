@@ -1,13 +1,16 @@
 """
 Unit tests for rate limit handling functions.
 
-Tests the parse_retry_after() and is_rate_limit_error() functions
-from rate_limit_utils.py (shared module).
+Tests the parse_retry_after(), is_rate_limit_error(), and backoff calculation
+functions from rate_limit_utils.py (shared module).
 """
 
 import unittest
 
 from rate_limit_utils import (
+    calculate_error_backoff,
+    calculate_rate_limit_backoff,
+    clamp_retry_delay,
     is_rate_limit_error,
     parse_retry_after,
 )
@@ -64,10 +67,15 @@ class TestIsRateLimitError(unittest.TestCase):
         assert is_rate_limit_error("Too many requests") is True
         assert is_rate_limit_error("HTTP 429 Too Many Requests") is True
         assert is_rate_limit_error("API quota exceeded") is True
-        assert is_rate_limit_error("Please wait before retrying") is True
-        assert is_rate_limit_error("Try again later") is True
         assert is_rate_limit_error("Server is overloaded") is True
-        assert is_rate_limit_error("Usage limit reached") is True
+
+    def test_specific_429_patterns(self):
+        """Test that 429 is detected with proper context."""
+        assert is_rate_limit_error("http 429") is True
+        assert is_rate_limit_error("HTTP429") is True
+        assert is_rate_limit_error("status 429") is True
+        assert is_rate_limit_error("error 429") is True
+        assert is_rate_limit_error("429 too many requests") is True
 
     def test_case_insensitive(self):
         """Test that detection is case-insensitive."""
@@ -86,25 +94,82 @@ class TestIsRateLimitError(unittest.TestCase):
         assert is_rate_limit_error("") is False
 
 
-class TestExponentialBackoff(unittest.TestCase):
-    """Test exponential backoff calculations."""
+class TestFalsePositives(unittest.TestCase):
+    """Verify non-rate-limit messages don't trigger detection."""
 
-    def test_backoff_sequence(self):
-        """Test that backoff follows expected sequence."""
-        # Simulating: min(60 * (2 ** retries), 3600)
+    def test_version_numbers_with_429(self):
+        """Version numbers should not trigger."""
+        assert is_rate_limit_error("Node v14.29.0") is False
+        assert is_rate_limit_error("Python 3.12.429") is False
+        assert is_rate_limit_error("Version 2.429 released") is False
+
+    def test_issue_and_pr_numbers(self):
+        """Issue/PR numbers should not trigger."""
+        assert is_rate_limit_error("See PR #429") is False
+        assert is_rate_limit_error("Fixed in issue 429") is False
+        assert is_rate_limit_error("Closes #429") is False
+
+    def test_line_numbers(self):
+        """Line numbers in errors should not trigger."""
+        assert is_rate_limit_error("Error at line 429") is False
+        assert is_rate_limit_error("See file.py:429") is False
+
+    def test_port_numbers(self):
+        """Port numbers should not trigger."""
+        assert is_rate_limit_error("port 4293") is False
+        assert is_rate_limit_error("localhost:4290") is False
+
+    def test_legitimate_wait_messages(self):
+        """Legitimate wait instructions should not trigger."""
+        # These would fail if "please wait" pattern still exists
+        assert is_rate_limit_error("Please wait for the build to complete") is False
+        assert is_rate_limit_error("Please wait while I analyze this") is False
+
+    def test_retry_discussion_messages(self):
+        """Messages discussing retry logic should not trigger."""
+        # These would fail if "try again later" pattern still exists
+        assert is_rate_limit_error("Try again later after maintenance") is False
+        assert is_rate_limit_error("The user should try again later") is False
+
+    def test_limit_discussion_messages(self):
+        """Messages discussing limits should not trigger (removed pattern)."""
+        # These would fail if "limit reached" pattern still exists
+        assert is_rate_limit_error("File size limit reached") is False
+        assert is_rate_limit_error("Memory limit reached, consider optimization") is False
+
+
+class TestBackoffFunctions(unittest.TestCase):
+    """Test backoff calculation functions from rate_limit_utils."""
+
+    def test_rate_limit_backoff_sequence(self):
+        """Test that rate limit backoff follows expected exponential sequence."""
         expected = [60, 120, 240, 480, 960, 1920, 3600, 3600]  # Caps at 3600
         for retries, expected_delay in enumerate(expected):
-            delay = min(60 * (2 ** retries), 3600)
+            delay = calculate_rate_limit_backoff(retries)
             assert delay == expected_delay, f"Retry {retries}: expected {expected_delay}, got {delay}"
 
     def test_error_backoff_sequence(self):
-        """Test error backoff follows expected sequence."""
-        # Simulating: min(30 * retries, 300)
+        """Test that error backoff follows expected linear sequence."""
         expected = [30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 300]  # Caps at 300
         for retries in range(1, len(expected) + 1):
-            delay = min(30 * retries, 300)
+            delay = calculate_error_backoff(retries)
             expected_delay = expected[retries - 1]
             assert delay == expected_delay, f"Retry {retries}: expected {expected_delay}, got {delay}"
+
+    def test_clamp_retry_delay(self):
+        """Test that retry delay is clamped to valid range."""
+        # Values within range stay the same
+        assert clamp_retry_delay(60) == 60
+        assert clamp_retry_delay(1800) == 1800
+        assert clamp_retry_delay(3600) == 3600
+
+        # Values below minimum get clamped to 1
+        assert clamp_retry_delay(0) == 1
+        assert clamp_retry_delay(-10) == 1
+
+        # Values above maximum get clamped to 3600
+        assert clamp_retry_delay(7200) == 3600
+        assert clamp_retry_delay(86400) == 3600
 
 
 if __name__ == "__main__":

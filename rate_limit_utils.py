@@ -3,24 +3,30 @@ Rate Limit Utilities
 ====================
 
 Shared utilities for detecting and handling API rate limits.
-Used by both agent.py (production) and test_agent.py (tests).
+Used by both agent.py (production) and test_rate_limit_utils.py (tests).
 """
 
 import re
 from typing import Optional
 
-# Rate limit detection patterns (used in both exception messages and response text)
-RATE_LIMIT_PATTERNS = [
-    "limit reached",
-    "rate limit",
-    "rate_limit",
-    "too many requests",
-    "quota exceeded",
-    "please wait",
-    "try again later",
-    "429",
-    "overloaded",
+# Regex patterns for rate limit detection (used in both exception messages and response text)
+# These patterns use word boundaries to avoid false positives like "PR #429" or "please wait while I..."
+RATE_LIMIT_REGEX_PATTERNS = [
+    r"\brate[_\s]?limit",         # "rate limit", "rate_limit", "ratelimit"
+    r"\btoo\s+many\s+requests",   # "too many requests"
+    r"\bhttp\s*429\b",            # "http 429", "http429"
+    r"\bstatus\s*429\b",          # "status 429", "status429"
+    r"\berror\s*429\b",           # "error 429", "error429"
+    r"\b429\s+too\s+many",        # "429 too many"
+    r"\boverloaded\b",            # "overloaded"
+    r"\bquota\s*exceeded\b",      # "quota exceeded"
 ]
+
+# Compiled regex for efficient matching
+_RATE_LIMIT_REGEX = re.compile(
+    "|".join(RATE_LIMIT_REGEX_PATTERNS),
+    re.IGNORECASE
+)
 
 
 def parse_retry_after(error_message: str) -> Optional[int]:
@@ -57,7 +63,8 @@ def is_rate_limit_error(error_message: str) -> bool:
     """
     Detect if an error message indicates a rate limit.
 
-    Checks against common rate limit patterns from various API providers.
+    Uses regex patterns with word boundaries to avoid false positives
+    like "PR #429", "please wait while I...", or "Node v14.29.0".
 
     Args:
         error_message: The error message to check
@@ -65,5 +72,49 @@ def is_rate_limit_error(error_message: str) -> bool:
     Returns:
         True if the message indicates a rate limit, False otherwise.
     """
-    error_lower = error_message.lower()
-    return any(pattern in error_lower for pattern in RATE_LIMIT_PATTERNS)
+    return bool(_RATE_LIMIT_REGEX.search(error_message))
+
+
+def calculate_rate_limit_backoff(retries: int) -> int:
+    """
+    Calculate exponential backoff for rate limits.
+
+    Formula: min(60 * 2^retries, 3600) - caps at 1 hour
+    Sequence: 60s, 120s, 240s, 480s, 960s, 1920s, 3600s...
+
+    Args:
+        retries: Number of consecutive rate limit retries (0-indexed)
+
+    Returns:
+        Delay in seconds (clamped to 1-3600 range)
+    """
+    return int(min(max(60 * (2 ** retries), 1), 3600))
+
+
+def calculate_error_backoff(retries: int) -> int:
+    """
+    Calculate linear backoff for non-rate-limit errors.
+
+    Formula: min(30 * retries, 300) - caps at 5 minutes
+    Sequence: 30s, 60s, 90s, 120s, ... 300s
+
+    Args:
+        retries: Number of consecutive error retries (1-indexed)
+
+    Returns:
+        Delay in seconds (clamped to 1-300 range)
+    """
+    return min(max(30 * retries, 1), 300)
+
+
+def clamp_retry_delay(delay_seconds: int) -> int:
+    """
+    Clamp a retry delay to a safe range (1-3600 seconds).
+
+    Args:
+        delay_seconds: The raw delay value
+
+    Returns:
+        Delay clamped to 1-3600 seconds
+    """
+    return min(max(delay_seconds, 1), 3600)
