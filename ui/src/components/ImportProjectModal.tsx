@@ -136,7 +136,7 @@ export function ImportProjectModal({
   }
 
   const handleBack = () => {
-    if (step === 'detected') {
+    if (step === 'detected' || step === 'analyzing') {
       setStep('folder')
       reset()
     } else if (step === 'features') {
