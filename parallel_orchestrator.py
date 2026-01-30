@@ -522,11 +522,14 @@ class ParallelOrchestrator:
         try:
             # CREATE_NO_WINDOW on Windows prevents console window pop-ups
             # stdin=DEVNULL prevents blocking on stdin reads
+            # encoding="utf-8" and errors="replace" fix Windows CP1252 issues (#138)
             popen_kwargs = {
                 "stdin": subprocess.DEVNULL,
                 "stdout": subprocess.PIPE,
                 "stderr": subprocess.STDOUT,
                 "text": True,
+                "encoding": "utf-8",
+                "errors": "replace",
                 "cwd": str(AUTOCODER_ROOT),  # Run from autocoder root for proper imports
                 "env": {**os.environ, "PYTHONUNBUFFERED": "1"},
             }
@@ -613,11 +616,14 @@ class ParallelOrchestrator:
             try:
                 # CREATE_NO_WINDOW on Windows prevents console window pop-ups
                 # stdin=DEVNULL prevents blocking on stdin reads
+                # encoding="utf-8" and errors="replace" fix Windows CP1252 issues (#138)
                 popen_kwargs = {
                     "stdin": subprocess.DEVNULL,
                     "stdout": subprocess.PIPE,
                     "stderr": subprocess.STDOUT,
                     "text": True,
+                    "encoding": "utf-8",
+                    "errors": "replace",
                     "cwd": str(AUTOCODER_ROOT),
                     "env": {**os.environ, "PYTHONUNBUFFERED": "1"},
                 }
@@ -671,11 +677,14 @@ class ParallelOrchestrator:
 
         # CREATE_NO_WINDOW on Windows prevents console window pop-ups
         # stdin=DEVNULL prevents blocking on stdin reads
+        # encoding="utf-8" and errors="replace" fix Windows CP1252 issues (#138)
         popen_kwargs = {
             "stdin": subprocess.DEVNULL,
             "stdout": subprocess.PIPE,
             "stderr": subprocess.STDOUT,
             "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
             "cwd": str(AUTOCODER_ROOT),
             "env": {**os.environ, "PYTHONUNBUFFERED": "1"},
         }
