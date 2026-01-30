@@ -19,6 +19,8 @@ import logging
 import os
 import shutil
 import sys
+import tempfile
+import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TypedDict
@@ -38,6 +40,20 @@ MANIFEST_VERSION = 1
 
 # Lock file timeout in seconds (5 minutes)
 LOCK_TIMEOUT_SECONDS = 300
+
+
+def get_autocoder_version() -> str:
+    """Get autocoder version from pyproject.toml, with fallback."""
+    try:
+        pyproject_path = Path(__file__).parent / "pyproject.toml"
+        if pyproject_path.exists():
+            with open(pyproject_path, "rb") as f:
+                data = tomllib.load(f)
+                return data.get("project", {}).get("version", "1.0.0")
+    except Exception:
+        pass
+    return "1.0.0"  # Fallback
+
 
 # Autocoder file patterns to detect and move
 # Directories (will be moved recursively)
@@ -97,13 +113,45 @@ class Manifest(TypedDict):
     file_count: int
 
 
-def compute_file_checksum(file_path: Path) -> str:
-    """Compute MD5 checksum for a file."""
-    md5 = hashlib.md5()
+def compute_file_checksum(file_path: Path, algorithm: str = "sha256") -> str:
+    """Compute checksum for a file using specified algorithm.
+
+    Args:
+        file_path: Path to the file
+        algorithm: Hash algorithm to use ("sha256" or "md5")
+
+    Returns:
+        Hex digest of the file checksum
+    """
+    if algorithm == "md5":
+        hasher = hashlib.md5()
+    else:
+        hasher = hashlib.sha256()
     with open(file_path, "rb") as f:
         for chunk in iter(lambda: f.read(8192), b""):
-            md5.update(chunk)
-    return md5.hexdigest()
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def verify_checksum(file_path: Path, expected: str) -> bool:
+    """Verify file checksum with algorithm auto-detection (SHA-256 vs MD5).
+
+    Detects algorithm by checksum length: MD5=32 hex chars, SHA-256=64 hex chars.
+    This provides backward compatibility with older backups using MD5.
+
+    Args:
+        file_path: Path to the file to verify
+        expected: Expected checksum value
+
+    Returns:
+        True if checksum matches, False otherwise
+    """
+    # Detect algorithm by checksum length: MD5=32 hex chars, SHA-256=64 hex chars
+    if len(expected) == 32:
+        actual = compute_file_checksum(file_path, algorithm="md5")
+    else:
+        actual = compute_file_checksum(file_path, algorithm="sha256")
+    return actual == expected
 
 
 def get_directory_info(dir_path: Path) -> tuple[int, int]:
@@ -185,54 +233,66 @@ def get_backup_info(project_dir: Path) -> Manifest | None:
 
 def acquire_detach_lock(project_dir: Path) -> bool:
     """
-    Acquire lock for detach operations.
+    Acquire lock for detach operations using atomic file creation.
 
+    Uses O_CREAT|O_EXCL for atomic lock creation to prevent TOCTOU race conditions.
     Writes PID and timestamp to lock file for stale lock detection.
 
     Returns:
         True if lock acquired, False if already locked
     """
     lock_file = project_dir / DETACH_LOCK
-    try:
-        # Check for stale lock first
-        if lock_file.exists():
+
+    def try_atomic_create() -> bool:
+        """Attempt atomic lock file creation. Returns True if successful."""
+        try:
+            fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             try:
-                lock_data = json.loads(lock_file.read_text(encoding="utf-8"))
-                lock_pid = lock_data.get("pid")
-                lock_time = lock_data.get("timestamp", 0)
+                lock_data = {
+                    "pid": os.getpid(),
+                    "timestamp": datetime.now(timezone.utc).timestamp(),
+                }
+                os.write(fd, json.dumps(lock_data).encode("utf-8"))
+            finally:
+                os.close(fd)
+            return True
+        except FileExistsError:
+            return False
+        except OSError as e:
+            logger.error("Failed to create lock file: %s", e)
+            return False
 
-                # Check if process is still alive
-                if lock_pid is not None:
-                    try:
-                        os.kill(lock_pid, 0)  # Check if process exists
-                        # Process exists, check timeout
-                        elapsed = datetime.now(timezone.utc).timestamp() - lock_time
-                        if elapsed < LOCK_TIMEOUT_SECONDS:
-                            return False  # Lock is valid
-                        # Lock is stale (timeout exceeded)
-                        logger.warning("Removing stale lock (timeout): pid=%s", lock_pid)
-                    except OSError:
-                        # Process doesn't exist - stale lock
-                        logger.warning("Removing stale lock (dead process): pid=%s", lock_pid)
-            except (json.JSONDecodeError, OSError, KeyError):
-                # Corrupted lock file - remove it
-                logger.warning("Removing corrupted lock file")
-
-            # Remove stale/corrupted lock
-            lock_file.unlink(missing_ok=True)
-
-        # Create new lock with PID and timestamp
-        lock_data = {
-            "pid": os.getpid(),
-            "timestamp": datetime.now(timezone.utc).timestamp(),
-        }
-        lock_file.write_text(json.dumps(lock_data), encoding="utf-8")
+    # First attempt
+    if try_atomic_create():
         return True
-    except FileExistsError:
-        return False
-    except OSError as e:
-        logger.error("Failed to acquire lock: %s", e)
-        return False
+
+    # Lock exists - check if stale/corrupted
+    try:
+        lock_data = json.loads(lock_file.read_text(encoding="utf-8"))
+        lock_pid = lock_data.get("pid")
+        lock_time = lock_data.get("timestamp", 0)
+
+        if lock_pid is not None:
+            try:
+                os.kill(lock_pid, 0)  # Check if process exists
+                # Process exists, check timeout
+                elapsed = datetime.now(timezone.utc).timestamp() - lock_time
+                if elapsed < LOCK_TIMEOUT_SECONDS:
+                    return False  # Valid lock held by another process
+                logger.warning("Removing stale lock (timeout): pid=%s", lock_pid)
+            except OSError:
+                # Process doesn't exist - stale lock
+                logger.warning("Removing stale lock (dead process): pid=%s", lock_pid)
+    except (json.JSONDecodeError, OSError, KeyError):
+        logger.warning("Removing corrupted lock file")
+
+    # Remove stale/corrupted lock and retry once
+    try:
+        lock_file.unlink()
+    except OSError:
+        pass
+
+    return try_atomic_create()
 
 
 def release_detach_lock(project_dir: Path) -> None:
@@ -299,7 +359,7 @@ def create_backup(
         "version": MANIFEST_VERSION,
         "detached_at": datetime.now(timezone.utc).isoformat(),
         "project_name": project_name,
-        "autocoder_version": "1.0.0",
+        "autocoder_version": get_autocoder_version(),
         "files": manifest_files,
         "total_size_bytes": total_size,
         "file_count": total_file_count,
@@ -403,7 +463,7 @@ def restore_backup(project_dir: Path, verify_checksums: bool = False) -> tuple[b
 
     # Restore files
     files_restored = 0
-    restored_entries: list[dict] = []
+    restored_entries: list[FileEntry] = []
 
     for entry in manifest["files"]:
         src_path = backup_dir / entry["path"]
@@ -422,37 +482,77 @@ def restore_backup(project_dir: Path, verify_checksums: bool = False) -> tuple[b
             logger.warning("Backup file missing: %s", entry["path"])
             continue
 
-        # Remove existing destination if it exists (after path validation)
-        if dest_path.exists():
-            if dest_path.is_dir() and not dest_path.is_symlink():
-                shutil.rmtree(dest_path)
-            else:
-                dest_path.unlink()
-
         # Ensure parent directory exists
         dest_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Copy back to project (not move - we'll delete backup only after all succeed)
+        # Atomic copy-then-replace: copy to temp, then atomically replace destination
+        temp_path: Path | None = None
         try:
             if src_path.is_symlink():
+                # Symlinks can be created atomically - remove existing first
+                if dest_path.exists() or dest_path.is_symlink():
+                    dest_path.unlink()
                 link_target = os.readlink(src_path)
                 dest_path.symlink_to(link_target)
             elif src_path.is_dir():
-                shutil.copytree(src_path, dest_path, symlinks=True)
+                # Directories: copy to temp location, then replace
+                temp_fd, temp_path_str = tempfile.mkstemp(
+                    dir=dest_path.parent,
+                    prefix=f".{dest_path.name}.",
+                    suffix=".tmp"
+                )
+                temp_path = Path(temp_path_str)
+                os.close(temp_fd)
+                # mkstemp creates a file, but we need a directory
+                temp_path.unlink()
+                shutil.copytree(src_path, temp_path, symlinks=True)
+
+                # Remove existing destination if needed
+                if dest_path.exists():
+                    if dest_path.is_dir() and not dest_path.is_symlink():
+                        shutil.rmtree(dest_path)
+                    else:
+                        dest_path.unlink()
+
+                os.replace(temp_path, dest_path)
+                temp_path = None  # Successfully moved, no cleanup needed
             else:
-                shutil.copy2(src_path, dest_path)
+                # Files: copy to temp location, then atomically replace
+                temp_fd, temp_path_str = tempfile.mkstemp(
+                    dir=dest_path.parent,
+                    prefix=f".{dest_path.name}.",
+                    suffix=".tmp"
+                )
+                temp_path = Path(temp_path_str)
+                os.close(temp_fd)
+                shutil.copy2(src_path, temp_path)
+
+                # Atomic replace (removes existing destination automatically for files)
+                os.replace(temp_path, dest_path)
+                temp_path = None  # Successfully moved, no cleanup needed
+
         except OSError as e:
             logger.error("Failed to restore %s: %s", entry["path"], e)
+            # Clean up temp file/directory on failure
+            if temp_path and temp_path.exists():
+                try:
+                    if temp_path.is_dir():
+                        shutil.rmtree(temp_path)
+                    else:
+                        temp_path.unlink()
+                except OSError:
+                    pass
             return False, files_restored
 
         # Verify checksum if requested and available
-        if verify_checksums and entry.get("checksum") and entry["type"] == "file":
-            actual_checksum = compute_file_checksum(dest_path)
-            if actual_checksum != entry["checksum"]:
-                logger.warning(
-                    "Checksum mismatch for %s: expected %s, got %s",
-                    entry["path"], entry["checksum"], actual_checksum
+        entry_checksum = entry.get("checksum")
+        if verify_checksums and entry_checksum and entry["type"] == "file":
+            if not verify_checksum(dest_path, entry_checksum):
+                logger.error(
+                    "Checksum mismatch for %s: expected %s",
+                    entry["path"], entry["checksum"]
                 )
+                return False, files_restored
 
         if entry["type"] == "directory":
             files_restored += entry.get("file_count") or 0
