@@ -92,11 +92,19 @@ class StackDetector:
                 try:
                     analysis = analyzer.analyze()
 
-                    # Determine category
+                    # Determine category (include all variants)
                     stack_name = analyzer.stack_name.lower()
-                    if stack_name in ("react", "nextjs", "vue", "nuxt", "angular"):
+                    if stack_name in (
+                        "react", "react-vite", "react-cra",
+                        "nextjs",
+                        "vue", "vue-vite", "vue-cli",
+                        "nuxt", "angular"
+                    ):
                         category = "frontend"
-                    elif stack_name in ("express", "fastapi", "django", "flask", "nestjs"):
+                    elif stack_name in (
+                        "express", "fastify", "koa", "nodejs",
+                        "fastapi", "django", "flask", "nestjs"
+                    ):
                         category = "backend"
                     elif stack_name in ("postgres", "mysql", "mongodb", "sqlite"):
                         category = "database"

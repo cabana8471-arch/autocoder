@@ -39,8 +39,18 @@ def _get_project_path(project_name: str) -> Path | None:
 
 def validate_path(path: str) -> bool:
     """Validate path to prevent traversal attacks."""
-    # Allow absolute paths but check for common attack patterns
-    if ".." in path or "\x00" in path:
+    # Check for null bytes
+    if "\x00" in path:
+        return False
+    try:
+        p = Path(path)
+    except Exception:
+        return False
+    # Require absolute paths
+    if not p.is_absolute():
+        return False
+    # Check for ".." as a path component (not just substring)
+    if ".." in p.parts:
         return False
     return True
 
@@ -185,6 +195,9 @@ async def extract_features(request: ExtractFeaturesRequest):
     if not project_dir.exists():
         raise HTTPException(status_code=404, detail="Directory not found")
 
+    if not project_dir.is_dir():
+        raise HTTPException(status_code=400, detail="Path is not a directory")
+
     try:
         from analyzers import extract_from_project
 
@@ -301,6 +314,9 @@ async def quick_detect(path: str):
 
     if not project_dir.exists():
         raise HTTPException(status_code=404, detail="Directory not found")
+
+    if not project_dir.is_dir():
+        raise HTTPException(status_code=400, detail="Path is not a directory")
 
     try:
         from analyzers import StackDetector
