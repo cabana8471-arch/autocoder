@@ -504,7 +504,7 @@ async def update_project_settings(name: str, settings: ProjectSettingsUpdate):
 # ============================================================================
 
 @router.get("/{name}/detach-status", response_model=DetachStatusResponse)
-async def get_detach_status(name: str):
+def get_detach_status(name: str):
     """Check if a project is detached and get backup info."""
     _init_imports()
     (_, _, get_project_path, _, _, _, _) = _get_registry_functions()
@@ -530,12 +530,15 @@ async def get_detach_status(name: str):
 
 
 @router.post("/{name}/detach", response_model=DetachResponse)
-async def detach_project(name: str):
+def detach_project(name: str):
     """
     Detach a project by moving Autocoder files to backup.
 
     This allows Claude Code to run without Autocoder restrictions.
     Files can be restored later with reattach.
+
+    Note: Using sync function because detach_project() performs blocking I/O.
+    FastAPI will run this in a threadpool automatically.
     """
     _init_imports()
     (_, _, get_project_path, _, _, _, _) = _get_registry_functions()
@@ -549,13 +552,8 @@ async def detach_project(name: str):
     if not project_dir.exists():
         raise HTTPException(status_code=404, detail="Project directory not found")
 
-    # Check if agent is running
-    lock_file = project_dir / ".agent.lock"
-    if lock_file.exists():
-        raise HTTPException(
-            status_code=409,
-            detail="Cannot detach while agent is running. Stop the agent first."
-        )
+    # Note: Agent lock check is handled inside detach_project() to avoid TOCTOU race.
+    # The detach module will return an appropriate error message if agent is running.
 
     success, message, manifest = _detach_module.detach_project(
         name,
@@ -565,25 +563,33 @@ async def detach_project(name: str):
     )
 
     if not success:
+        # Map common error messages to appropriate HTTP status codes
+        if "Agent is currently running" in message:
+            raise HTTPException(status_code=409, detail=message)
+        elif "already detached" in message:
+            raise HTTPException(status_code=409, detail=message)
+        elif "in progress" in message:
+            raise HTTPException(status_code=409, detail=message)
         raise HTTPException(status_code=400, detail=message)
-
-    backup_path = project_dir / _detach_module.BACKUP_DIR
 
     return DetachResponse(
         success=True,
         files_moved=manifest["file_count"] if manifest else 0,
         backup_size=manifest["total_size_bytes"] if manifest else 0,
-        backup_path=str(backup_path),
+        backup_path=_detach_module.BACKUP_DIR,  # Return relative path, not absolute
         message=message,
     )
 
 
 @router.post("/{name}/reattach", response_model=ReattachResponse)
-async def reattach_project(name: str):
+def reattach_project(name: str):
     """
     Reattach a project by restoring Autocoder files from backup.
 
     This restores all Autocoder files and re-enables restrictions.
+
+    Note: Using sync function because reattach_project() performs blocking I/O.
+    FastAPI will run this in a threadpool automatically.
     """
     _init_imports()
     (_, _, get_project_path, _, _, _, _) = _get_registry_functions()
@@ -597,9 +603,20 @@ async def reattach_project(name: str):
     if not project_dir.exists():
         raise HTTPException(status_code=404, detail="Project directory not found")
 
+    # Check if agent is running (consistent with detach endpoint)
+    lock_file = project_dir / ".agent.lock"
+    if lock_file.exists():
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot reattach while agent is running. Stop the agent first."
+        )
+
     success, message, files_restored = _detach_module.reattach_project(name)
 
     if not success:
+        # Map common error messages to appropriate HTTP status codes
+        if "in progress" in message:
+            raise HTTPException(status_code=409, detail=message)
         raise HTTPException(status_code=400, detail=message)
 
     return ReattachResponse(

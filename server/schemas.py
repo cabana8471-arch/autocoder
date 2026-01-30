@@ -75,7 +75,7 @@ class DetachResponse(BaseModel):
     success: bool
     files_moved: int
     backup_size: int
-    backup_path: str
+    backup_path: str  # Relative path to backup directory (not absolute for security)
     message: str = ""
 
 

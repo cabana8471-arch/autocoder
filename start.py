@@ -15,12 +15,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from auth import is_auth_error, print_auth_error_help
-
-# Load environment variables from .env file if present
-load_dotenv()
-
 import detach as detach_module
+from auth import is_auth_error, print_auth_error_help
 from prompts import (
     get_project_prompts_dir,
     has_project_prompts,
@@ -31,6 +27,9 @@ from registry import (
     list_registered_projects,
     register_project,
 )
+
+# Load environment variables from .env file if present
+load_dotenv()
 
 
 def check_spec_exists(project_dir: Path) -> bool:
