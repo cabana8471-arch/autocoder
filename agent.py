@@ -372,6 +372,8 @@ async def run_autonomous_agent(
 
         elif status == "rate_limit":
             # Smart rate limit handling with exponential backoff
+            # Reset error counter so mixed events don't inflate delays
+            error_retries = 0
             if response != "unknown":
                 try:
                     delay_seconds = clamp_retry_delay(int(response))
@@ -390,6 +392,8 @@ async def run_autonomous_agent(
 
         elif status == "error":
             # Non-rate-limit errors: linear backoff capped at 5 minutes
+            # Reset rate limit counter so mixed events don't inflate delays
+            rate_limit_retries = 0
             error_retries += 1
             delay_seconds = calculate_error_backoff(error_retries)
             print("\nSession encountered an error")
