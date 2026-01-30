@@ -393,9 +393,7 @@ async def run_autonomous_agent(
                             target += timedelta(days=1)
 
                         delta = target - now
-                        delay_seconds = int(min(
-                            delta.total_seconds(), 24 * 60 * 60
-                        ))  # Clamp to 24 hours max
+                        delay_seconds = clamp_retry_delay(int(delta.total_seconds()))
                         target_time_str = target.strftime("%B %d, %Y at %I:%M %p %Z")
 
                     except Exception as e:
