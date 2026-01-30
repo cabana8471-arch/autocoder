@@ -13,6 +13,7 @@ Supports:
 """
 
 import json
+import os
 import shutil
 import subprocess
 from datetime import datetime, timezone
@@ -80,13 +81,17 @@ def _detect_js_linter(project_dir: Path) -> tuple[str, list[str]] | None:
     Returns:
         (name, command) tuple, or None if no linter detected
     """
-    # Check for ESLint
-    if (project_dir / "node_modules/.bin/eslint").exists():
-        return ("eslint", ["node_modules/.bin/eslint", ".", "--max-warnings=0"])
+    # Check for ESLint in node_modules/.bin (handles .cmd on Windows)
+    bin_dir = project_dir / "node_modules" / ".bin"
+    if bin_dir.exists():
+        eslint = shutil.which("eslint", path=str(bin_dir))
+        if eslint:
+            return ("eslint", [eslint, ".", "--max-warnings=0"])
 
-    # Check for Biome
-    if (project_dir / "node_modules/.bin/biome").exists():
-        return ("biome", ["node_modules/.bin/biome", "lint", "."])
+        # Check for Biome
+        biome = shutil.which("biome", path=str(bin_dir))
+        if biome:
+            return ("biome", [biome, "lint", "."])
 
     # Check for package.json lint script
     package_json = project_dir / "package.json"
@@ -109,22 +114,24 @@ def _detect_python_linter(project_dir: Path) -> tuple[str, list[str]] | None:
     Returns:
         (name, command) tuple, or None if no linter detected
     """
-    # Check for ruff
+    # Check for ruff in PATH
     if shutil.which("ruff"):
         return ("ruff", ["ruff", "check", "."])
 
-    # Check for flake8
+    # Check for flake8 in PATH
     if shutil.which("flake8"):
         return ("flake8", ["flake8", "."])
 
-    # Check in virtual environment
-    venv_ruff = project_dir / "venv/bin/ruff"
-    if venv_ruff.exists():
-        return ("ruff", [str(venv_ruff), "check", "."])
+    # Check in virtual environment (venv/Scripts on Windows, venv/bin on Unix)
+    venv_bin = project_dir / "venv" / ("Scripts" if os.name == "nt" else "bin")
+    if venv_bin.exists():
+        venv_ruff = shutil.which("ruff", path=str(venv_bin))
+        if venv_ruff:
+            return ("ruff", [venv_ruff, "check", "."])
 
-    venv_flake8 = project_dir / "venv/bin/flake8"
-    if venv_flake8.exists():
-        return ("flake8", [str(venv_flake8), "."])
+        venv_flake8 = shutil.which("flake8", path=str(venv_bin))
+        if venv_flake8:
+            return ("flake8", [venv_flake8, "."])
 
     return None
 
@@ -136,10 +143,13 @@ def _detect_type_checker(project_dir: Path) -> tuple[str, list[str]] | None:
     Returns:
         (name, command) tuple, or None if no type checker detected
     """
-    # TypeScript
+    # TypeScript - check for tsc in node_modules/.bin (handles .cmd on Windows)
     if (project_dir / "tsconfig.json").exists():
-        if (project_dir / "node_modules/.bin/tsc").exists():
-            return ("tsc", ["node_modules/.bin/tsc", "--noEmit"])
+        bin_dir = project_dir / "node_modules" / ".bin"
+        if bin_dir.exists():
+            tsc = shutil.which("tsc", path=str(bin_dir))
+            if tsc:
+                return ("tsc", [tsc, "--noEmit"])
         if shutil.which("npx"):
             # Use --no-install to fail fast if tsc is not locally installed
             # rather than prompting/auto-downloading
@@ -149,9 +159,13 @@ def _detect_type_checker(project_dir: Path) -> tuple[str, list[str]] | None:
     if (project_dir / "pyproject.toml").exists() or (project_dir / "setup.py").exists():
         if shutil.which("mypy"):
             return ("mypy", ["mypy", "."])
-        venv_mypy = project_dir / "venv/bin/mypy"
-        if venv_mypy.exists():
-            return ("mypy", [str(venv_mypy), "."])
+
+        # Check in virtual environment (venv/Scripts on Windows, venv/bin on Unix)
+        venv_bin = project_dir / "venv" / ("Scripts" if os.name == "nt" else "bin")
+        if venv_bin.exists():
+            venv_mypy = shutil.which("mypy", path=str(venv_bin))
+            if venv_mypy:
+                return ("mypy", [venv_mypy, "."])
 
     return None
 
