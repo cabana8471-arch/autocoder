@@ -46,7 +46,11 @@ AUTOCODER_DIRECTORIES = {
 # Files with exact names
 AUTOCODER_FILES = {
     "features.db",
+    "features.db-shm",  # SQLite shared memory file
+    "features.db-wal",  # SQLite write-ahead log
     "assistant.db",
+    "assistant.db-shm",  # SQLite shared memory file
+    "assistant.db-wal",  # SQLite write-ahead log
     "CLAUDE.md",
     ".claude_settings.json",
     ".claude_assistant_settings.json",
@@ -59,6 +63,10 @@ AUTOCODER_PATTERNS = [
     "test-*.json",
     "test-*.py",
     "test-*.html",
+    "test-*.sql",  # SQL test files
+    "test-*.php",  # PHP test files
+    "create-*-test*.php",  # Test helper scripts (e.g., create-xss-test.php)
+    "rollback-*.json",  # Rollback test data
     "generate-*.py",
     "mark_feature*.py",
     ".claude_settings.expand.*.json",
@@ -179,11 +187,11 @@ def acquire_detach_lock(project_dir: Path) -> bool:
         True if lock acquired, False if already locked
     """
     lock_file = project_dir / DETACH_LOCK
-    if lock_file.exists():
-        return False
     try:
-        lock_file.touch()
+        lock_file.touch(exist_ok=False)
         return True
+    except FileExistsError:
+        return False
     except OSError:
         return False
 
@@ -329,7 +337,10 @@ def restore_backup(project_dir: Path) -> tuple[bool, int]:
 
         # Move back to project
         shutil.move(str(src_path), str(dest_path))
-        files_restored += 1
+        if entry["type"] == "directory":
+            files_restored += entry.get("file_count") or 0
+        else:
+            files_restored += 1
         logger.debug("Restored %s", entry["path"])
 
     # Remove backup directory
@@ -613,12 +624,12 @@ Examples:
         print(f"\nProject: {args.project}")
         print("-" * 40)
         if status["is_detached"]:
-            print(f"  Status: DETACHED")
+            print("  Status: DETACHED")
             print(f"  Detached at: {status['detached_at']}")
             print(f"  Backup size: {status['backup_size'] / 1024 / 1024:.1f} MB")
             print(f"  Files in backup: {status['file_count']}")
         else:
-            print(f"  Status: attached (Autocoder files present)")
+            print("  Status: attached (Autocoder files present)")
         print()
         return 0
 

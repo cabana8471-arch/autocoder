@@ -71,6 +71,66 @@ class TestGetAutocoderFiles(unittest.TestCase):
         self.assertIn("test-api.py", names)
         self.assertIn("generate-data.py", names)
 
+    def test_detects_sqlite_wal_files(self):
+        """Should detect SQLite WAL companion files."""
+        (self.project_dir / "features.db").touch()
+        (self.project_dir / "features.db-shm").write_bytes(b"\x00" * 32768)
+        (self.project_dir / "features.db-wal").touch()
+        (self.project_dir / "assistant.db").touch()
+        (self.project_dir / "assistant.db-shm").write_bytes(b"\x00" * 32768)
+        (self.project_dir / "assistant.db-wal").touch()
+        files = detach.get_autocoder_files(self.project_dir)
+        names = {f.name for f in files}
+        self.assertIn("features.db", names)
+        self.assertIn("features.db-shm", names)
+        self.assertIn("features.db-wal", names)
+        self.assertIn("assistant.db", names)
+        self.assertIn("assistant.db-shm", names)
+        self.assertIn("assistant.db-wal", names)
+        self.assertEqual(len(files), 6)
+
+    def test_detects_sql_test_files(self):
+        """Should detect test-*.sql files."""
+        (self.project_dir / "test-feature153-create-page.sql").touch()
+        (self.project_dir / "test-database-migration.sql").touch()
+        files = detach.get_autocoder_files(self.project_dir)
+        names = {f.name for f in files}
+        self.assertIn("test-feature153-create-page.sql", names)
+        self.assertIn("test-database-migration.sql", names)
+        self.assertEqual(len(files), 2)
+
+    def test_detects_php_test_files(self):
+        """Should detect test-*.php files."""
+        (self.project_dir / "test-feature28-create-page.php").touch()
+        (self.project_dir / "test-api-endpoint.php").touch()
+        files = detach.get_autocoder_files(self.project_dir)
+        names = {f.name for f in files}
+        self.assertIn("test-feature28-create-page.php", names)
+        self.assertIn("test-api-endpoint.php", names)
+        self.assertEqual(len(files), 2)
+
+    def test_detects_test_helper_php_files(self):
+        """Should detect create-*-test*.php helper scripts."""
+        (self.project_dir / "create-xss-direct-test.php").touch()
+        (self.project_dir / "create-xss-test-page.php").touch()
+        (self.project_dir / "create-csrf-test.php").touch()
+        files = detach.get_autocoder_files(self.project_dir)
+        names = {f.name for f in files}
+        self.assertIn("create-xss-direct-test.php", names)
+        self.assertIn("create-xss-test-page.php", names)
+        self.assertIn("create-csrf-test.php", names)
+        self.assertEqual(len(files), 3)
+
+    def test_detects_rollback_json_files(self):
+        """Should detect rollback-*.json files."""
+        (self.project_dir / "rollback-test-translated.json").touch()
+        (self.project_dir / "rollback-migration-v2.json").touch()
+        files = detach.get_autocoder_files(self.project_dir)
+        names = {f.name for f in files}
+        self.assertIn("rollback-test-translated.json", names)
+        self.assertIn("rollback-migration-v2.json", names)
+        self.assertEqual(len(files), 2)
+
     def test_excludes_artifacts_when_disabled(self):
         """Should exclude .playwright-mcp when include_artifacts=False."""
         (self.project_dir / ".playwright-mcp").mkdir()

@@ -49,10 +49,10 @@ def _init_imports():
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
 
+    import detach as detach_module
     from progress import count_passing_tests
     from prompts import get_project_prompts_dir, scaffold_project_prompts
     from start import check_spec_exists
-    import detach as detach_module
 
     _check_spec_exists = check_spec_exists
     _scaffold_project_prompts = scaffold_project_prompts
