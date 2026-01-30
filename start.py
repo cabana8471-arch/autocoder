@@ -433,7 +433,10 @@ def handle_project_detach_action(project_name: str, project_path: Path) -> None:
         if confirm == 'y':
             print("\nReattaching...")
             success, message, _ = detach_module.reattach_project(project_name)
-            print(f"  {message}")
+            if success:
+                print(f"  ✓ {message}")
+            else:
+                print(f"  ✗ {message}")
     else:
         # Offer to detach
         print("\nThis project is attached. Autocoder files are present.")
@@ -446,7 +449,10 @@ def handle_project_detach_action(project_name: str, project_path: Path) -> None:
         if confirm == 'y':
             print("\nDetaching...")
             success, message, manifest = detach_module.detach_project(project_name)
-            print(f"  {message}")
+            if success:
+                print(f"  ✓ {message}")
+            else:
+                print(f"  ✗ {message}")
 
     try:
         input("\nPress Enter to continue...")
