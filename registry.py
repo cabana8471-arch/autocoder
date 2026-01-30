@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import Column, DateTime, String, create_engine
+from sqlalchemy import Column, DateTime, Integer, String, create_engine, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 # Module logger
@@ -86,6 +86,7 @@ class Project(Base):
     name = Column(String(50), primary_key=True, index=True)
     path = Column(String, nullable=False)  # POSIX format for cross-platform
     created_at = Column(DateTime, nullable=False)
+    default_concurrency = Column(Integer, nullable=False, default=3)
 
 
 class Settings(Base):
@@ -147,10 +148,23 @@ def _get_engine():
                     }
                 )
                 Base.metadata.create_all(bind=_engine)
+                _migrate_add_default_concurrency(_engine)
                 _SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_engine)
                 logger.debug("Initialized registry database at: %s", db_path)
 
     return _engine, _SessionLocal
+
+
+def _migrate_add_default_concurrency(engine) -> None:
+    """Add default_concurrency column if missing (for existing databases)."""
+    with engine.connect() as conn:
+        result = conn.execute(text("PRAGMA table_info(projects)"))
+        columns = [row[1] for row in result.fetchall()]
+        if "default_concurrency" not in columns:
+            conn.execute(text(
+                "ALTER TABLE projects ADD COLUMN default_concurrency INTEGER DEFAULT 3"
+            ))
+            conn.commit()
 
 
 @contextmanager
