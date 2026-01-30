@@ -249,7 +249,11 @@ def extract_features(detection_result: StackDetectionResult) -> FeatureExtractio
         if method == "ALL":
             method = "GET"
 
-        feature_name = _route_to_feature_name(path, method)
+        # Ensure API endpoints get API-style naming
+        name_path = path
+        if not name_path.lstrip("/").startswith("api/"):
+            name_path = f"/api{name_path if name_path.startswith('/') else '/' + name_path}"
+        feature_name = _route_to_feature_name(name_path, method)
 
         # Skip duplicates
         feature_key = f"endpoint:{path}:{method}"

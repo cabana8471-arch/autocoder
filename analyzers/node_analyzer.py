@@ -248,9 +248,11 @@ class NodeAnalyzer(BaseAnalyzer):
             if content is None:
                 continue
 
-            # Get controller base path
+            # Get controller base path (normalize to avoid double slashes)
             controller_match = controller_pattern.search(content)
-            base_path = "/" + controller_match.group(1) if controller_match else ""
+            base_path = ""
+            if controller_match:
+                base_path = "/" + controller_match.group(1).lstrip("/")
 
             for match in decorator_pattern.finditer(content):
                 method = match.group(1).upper()

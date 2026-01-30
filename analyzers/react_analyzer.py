@@ -174,40 +174,26 @@ class ReactAnalyzer(BaseAnalyzer):
         """Extract routes from Next.js App Router."""
         routes: list[RouteInfo] = []
 
-        for page_file in app_dir.rglob("page.tsx"):
-            rel_path = page_file.relative_to(app_dir)
-            route_path = "/" + "/".join(rel_path.parent.parts)
+        # Check all page file extensions: .tsx, .jsx, .ts, .js
+        for pattern in ("page.tsx", "page.jsx", "page.ts", "page.js"):
+            for page_file in app_dir.rglob(pattern):
+                rel_path = page_file.relative_to(app_dir)
+                route_path = "/" + "/".join(rel_path.parent.parts)
 
-            # Handle dynamic routes: [id] -> :id
-            route_path = re.sub(r"\[([^\]]+)\]", r":\1", route_path)
+                # Handle dynamic routes: [id] -> :id
+                route_path = re.sub(r"\[([^\]]+)\]", r":\1", route_path)
 
-            # Clean up
-            if route_path == "/.":
-                route_path = "/"
-            route_path = route_path.replace("//", "/")
+                # Clean up
+                if route_path == "/.":
+                    route_path = "/"
+                route_path = route_path.replace("//", "/")
 
-            routes.append({
-                "path": route_path,
-                "method": "GET",
-                "handler": "Page",
-                "file": str(page_file.relative_to(self.project_dir)),
-            })
-
-        # Also check .jsx files
-        for page_file in app_dir.rglob("page.jsx"):
-            rel_path = page_file.relative_to(app_dir)
-            route_path = "/" + "/".join(rel_path.parent.parts)
-            route_path = re.sub(r"\[([^\]]+)\]", r":\1", route_path)
-            if route_path == "/.":
-                route_path = "/"
-            route_path = route_path.replace("//", "/")
-
-            routes.append({
-                "path": route_path,
-                "method": "GET",
-                "handler": "Page",
-                "file": str(page_file.relative_to(self.project_dir)),
-            })
+                routes.append({
+                    "path": route_path,
+                    "method": "GET",
+                    "handler": "Page",
+                    "file": str(page_file.relative_to(self.project_dir)),
+                })
 
         return routes
 
@@ -215,50 +201,31 @@ class ReactAnalyzer(BaseAnalyzer):
         """Extract routes from Next.js Pages Router."""
         routes: list[RouteInfo] = []
 
-        for page_file in pages_dir.rglob("*.tsx"):
-            if page_file.name.startswith("_"):  # Skip _app.tsx, _document.tsx
-                continue
-            if "api" in page_file.parts:  # Skip API routes
-                continue
+        # Check all page file extensions: .tsx, .jsx, .ts, .js
+        for ext in ("tsx", "jsx", "ts", "js"):
+            for page_file in pages_dir.rglob(f"*.{ext}"):
+                if page_file.name.startswith("_"):  # Skip _app.tsx, _document.tsx
+                    continue
+                if "api" in page_file.parts:  # Skip API routes
+                    continue
 
-            rel_path = page_file.relative_to(pages_dir)
-            route_path = "/" + str(rel_path.with_suffix(""))
+                rel_path = page_file.relative_to(pages_dir)
+                route_path = "/" + str(rel_path.with_suffix(""))
 
-            # Handle index files
-            route_path = route_path.replace("/index", "")
-            if not route_path:
-                route_path = "/"
+                # Handle index files
+                route_path = route_path.replace("/index", "")
+                if not route_path:
+                    route_path = "/"
 
-            # Handle dynamic routes
-            route_path = re.sub(r"\[([^\]]+)\]", r":\1", route_path)
+                # Handle dynamic routes
+                route_path = re.sub(r"\[([^\]]+)\]", r":\1", route_path)
 
-            routes.append({
-                "path": route_path,
-                "method": "GET",
-                "handler": page_file.stem,
-                "file": str(page_file.relative_to(self.project_dir)),
-            })
-
-        # Also check .jsx files
-        for page_file in pages_dir.rglob("*.jsx"):
-            if page_file.name.startswith("_"):
-                continue
-            if "api" in page_file.parts:
-                continue
-
-            rel_path = page_file.relative_to(pages_dir)
-            route_path = "/" + str(rel_path.with_suffix(""))
-            route_path = route_path.replace("/index", "")
-            if not route_path:
-                route_path = "/"
-            route_path = re.sub(r"\[([^\]]+)\]", r":\1", route_path)
-
-            routes.append({
-                "path": route_path,
-                "method": "GET",
-                "handler": page_file.stem,
-                "file": str(page_file.relative_to(self.project_dir)),
-            })
+                routes.append({
+                    "path": route_path,
+                    "method": "GET",
+                    "handler": page_file.stem,
+                    "file": str(page_file.relative_to(self.project_dir)),
+                })
 
         return routes
 
