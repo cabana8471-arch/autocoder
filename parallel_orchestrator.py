@@ -35,7 +35,6 @@ from api.database import Feature, create_database
 from api.dependency_resolver import are_dependencies_satisfied, compute_scheduling_scores
 from progress import has_features
 from server.utils.process_utils import kill_process_tree
-from structured_logging import get_logger
 
 # Root directory of autocoder (where this script and autonomous_agent_demo.py live)
 AUTOCODER_ROOT = Path(__file__).parent.resolve()
@@ -144,11 +143,11 @@ class ParallelOrchestrator:
         self,
         project_dir: Path,
         max_concurrency: int = DEFAULT_CONCURRENCY,
-        model: str = None,
+        model: str | None = None,
         yolo_mode: bool = False,
         testing_agent_ratio: int = 1,
-        on_output: Callable[[int, str], None] = None,
-        on_status: Callable[[int, str], None] = None,
+        on_output: Callable[[int, str], None] | None = None,
+        on_status: Callable[[int, str], None] | None = None,
     ):
         """Initialize the orchestrator.
 
@@ -174,11 +173,9 @@ class ParallelOrchestrator:
         # Thread-safe state
         self._lock = threading.Lock()
         # Coding agents: feature_id -> process
-        # Safe to key by feature_id because start_feature() checks for duplicates before spawning
         self.running_coding_agents: dict[int, subprocess.Popen] = {}
-        # Testing agents: pid -> (feature_id, process)
-        # Keyed by PID (not feature_id) because multiple agents can test the same feature
-        self.running_testing_agents: dict[int, tuple[int, subprocess.Popen]] = {}
+        # Testing agents: feature_id -> process (feature being tested)
+        self.running_testing_agents: dict[int, subprocess.Popen] = {}
         # Legacy alias for backward compatibility
         self.running_agents = self.running_coding_agents
         self.abort_events: dict[int, threading.Event] = {}
@@ -187,27 +184,21 @@ class ParallelOrchestrator:
         # Track feature failures to prevent infinite retry loops
         self._failure_counts: dict[int, int] = {}
 
+        # Shutdown flag for async-safe signal handling
+        # Signal handlers only set this flag; cleanup happens in the main loop
+        self._shutdown_requested = False
+
         # Session tracking for logging/debugging
-        self.session_start_time: datetime = None
+        self.session_start_time: datetime | None = None
 
         # Event signaled when any agent completes, allowing the main loop to wake
         # immediately instead of waiting for the full POLL_INTERVAL timeout.
         # This reduces latency when spawning the next feature after completion.
-        self._agent_completed_event: asyncio.Event = None  # Created in run_loop
-        self._event_loop: asyncio.AbstractEventLoop = None  # Stored for thread-safe signaling
+        self._agent_completed_event: asyncio.Event | None = None  # Created in run_loop
+        self._event_loop: asyncio.AbstractEventLoop | None = None  # Stored for thread-safe signaling
 
         # Database session for this orchestrator
         self._engine, self._session_maker = create_database(project_dir)
-
-        # Structured logger for persistent logs (saved to {project_dir}/.autocoder/logs.db)
-        # Uses console_output=False since orchestrator already has its own print statements
-        self._logger = get_logger(project_dir, agent_id="orchestrator", console_output=False)
-        self._logger.info(
-            "Orchestrator initialized",
-            max_concurrency=self.max_concurrency,
-            yolo_mode=yolo_mode,
-            testing_agent_ratio=testing_agent_ratio,
-        )
 
     def get_session(self):
         """Get a new database session."""
@@ -390,7 +381,8 @@ class ParallelOrchestrator:
         session = self.get_session()
         try:
             session.expire_all()
-            return session.query(Feature).filter(Feature.passes == True).count()
+            count: int = session.query(Feature).filter(Feature.passes == True).count()
+            return count
         finally:
             session.close()
 
@@ -446,10 +438,7 @@ class ParallelOrchestrator:
 
             # Spawn outside lock (I/O bound operation)
             print(f"[DEBUG] Spawning testing agent ({spawn_index}/{desired})", flush=True)
-            success, msg = self._spawn_testing_agent()
-            if not success:
-                debug_log.log("TESTING", f"Spawn failed, stopping: {msg}")
-                return
+            self._spawn_testing_agent()
 
     def start_feature(self, feature_id: int, resume: bool = False) -> tuple[bool, str]:
         """Start a single coding agent for a feature.
@@ -474,45 +463,22 @@ class ParallelOrchestrator:
         # Mark as in_progress in database (or verify it's resumable)
         session = self.get_session()
         try:
+            feature = session.query(Feature).filter(Feature.id == feature_id).first()
+            if not feature:
+                return False, "Feature not found"
+            if feature.passes:
+                return False, "Feature already complete"
+
             if resume:
-                # Resuming: verify feature is already in_progress
-                feature = session.query(Feature).filter(Feature.id == feature_id).first()
-                if not feature:
-                    return False, "Feature not found"
+                # Resuming: feature should already be in_progress
                 if not feature.in_progress:
                     return False, "Feature not in progress, cannot resume"
-                if feature.passes:
-                    return False, "Feature already complete"
             else:
-                # Starting fresh: atomic claim using UPDATE-WHERE pattern (same as testing agent)
-                # This prevents race conditions where multiple agents try to claim the same feature
-                from sqlalchemy import text
-                result = session.execute(
-                    text("""
-                        UPDATE features
-                        SET in_progress = 1
-                        WHERE id = :feature_id
-                          AND passes = 0
-                          AND in_progress = 0
-                    """),
-                    {"feature_id": feature_id}
-                )
+                # Starting fresh: feature should not be in_progress
+                if feature.in_progress:
+                    return False, "Feature already in progress"
+                feature.in_progress = True
                 session.commit()
-
-                if result.rowcount == 0:
-                    # Atomic claim failed - another agent claimed it or feature is already complete
-                    # Query to determine exact reason for better error messages
-                    feature = session.query(Feature).filter(Feature.id == feature_id).first()
-                    if not feature:
-                        return False, "Feature not found"
-                    if feature.passes:
-                        return False, "Feature already complete"
-                    if feature.in_progress:
-                        return False, "Feature already claimed by another agent"
-                    # Edge case: feature exists but conditions changed between check and update
-                    return False, "Feature state changed, unable to claim"
-
-                debug_log.log("CLAIM", f"Successfully claimed feature #{feature_id} atomically")
         finally:
             session.close()
 
@@ -547,23 +513,16 @@ class ParallelOrchestrator:
             cmd.append("--yolo")
 
         try:
-            # CREATE_NO_WINDOW on Windows prevents console window pop-ups
-            # stdin=DEVNULL prevents blocking on stdin reads
-            popen_kwargs = {
-                "stdin": subprocess.DEVNULL,
-                "stdout": subprocess.PIPE,
-                "stderr": subprocess.STDOUT,
-                "text": True,
-                "cwd": str(AUTOCODER_ROOT),  # Run from autocoder root for proper imports
-                "env": {**os.environ, "PYTHONUNBUFFERED": "1"},
-            }
-            if sys.platform == "win32":
-                popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-
-            proc = subprocess.Popen(cmd, **popen_kwargs)
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                cwd=str(AUTOCODER_ROOT),
+                env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            )
         except Exception as e:
             # Reset in_progress on failure
-            self._logger.error("Spawn coding agent failed", feature_id=feature_id, error=str(e)[:200])
             session = self.get_session()
             try:
                 feature = session.query(Feature).filter(Feature.id == feature_id).first()
@@ -585,11 +544,10 @@ class ParallelOrchestrator:
             daemon=True
         ).start()
 
-        if self.on_status:
+        if self.on_status is not None:
             self.on_status(feature_id, "running")
 
         print(f"Started coding agent for feature #{feature_id}", flush=True)
-        self._logger.info("Spawned coding agent", feature_id=feature_id, pid=proc.pid)
         return True, f"Started feature {feature_id}"
 
     def _spawn_testing_agent(self) -> tuple[bool, str]:
@@ -638,28 +596,20 @@ class ParallelOrchestrator:
                 cmd.extend(["--model", self.model])
 
             try:
-                # CREATE_NO_WINDOW on Windows prevents console window pop-ups
-                # stdin=DEVNULL prevents blocking on stdin reads
-                popen_kwargs = {
-                    "stdin": subprocess.DEVNULL,
-                    "stdout": subprocess.PIPE,
-                    "stderr": subprocess.STDOUT,
-                    "text": True,
-                    "cwd": str(AUTOCODER_ROOT),
-                    "env": {**os.environ, "PYTHONUNBUFFERED": "1"},
-                }
-                if sys.platform == "win32":
-                    popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-
-                proc = subprocess.Popen(cmd, **popen_kwargs)
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    cwd=str(AUTOCODER_ROOT),
+                    env={**os.environ, "PYTHONUNBUFFERED": "1"},
+                )
             except Exception as e:
                 debug_log.log("TESTING", f"FAILED to spawn testing agent: {e}")
-                self._logger.error("Spawn testing agent failed", feature_id=feature_id, error=str(e)[:200])
                 return False, f"Failed to start testing agent: {e}"
 
-            # Register process by PID (not feature_id) to avoid overwrites
-            # when multiple agents test the same feature
-            self.running_testing_agents[proc.pid] = (feature_id, proc)
+            # Register process with feature ID (same pattern as coding agents)
+            self.running_testing_agents[feature_id] = proc
             testing_count = len(self.running_testing_agents)
 
         # Start output reader thread with feature ID (same as coding agents)
@@ -697,20 +647,14 @@ class ParallelOrchestrator:
 
         print("Running initializer agent...", flush=True)
 
-        # CREATE_NO_WINDOW on Windows prevents console window pop-ups
-        # stdin=DEVNULL prevents blocking on stdin reads
-        popen_kwargs = {
-            "stdin": subprocess.DEVNULL,
-            "stdout": subprocess.PIPE,
-            "stderr": subprocess.STDOUT,
-            "text": True,
-            "cwd": str(AUTOCODER_ROOT),
-            "env": {**os.environ, "PYTHONUNBUFFERED": "1"},
-        }
-        if sys.platform == "win32":
-            popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-
-        proc = subprocess.Popen(cmd, **popen_kwargs)
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            cwd=str(AUTOCODER_ROOT),
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        )
 
         debug_log.log("INIT", "Initializer subprocess started", pid=proc.pid)
 
@@ -757,23 +701,20 @@ class ParallelOrchestrator:
     ):
         """Read output from subprocess and emit events."""
         try:
+            if proc.stdout is None:
+                proc.wait()
+                return
             for line in proc.stdout:
                 if abort.is_set():
                     break
                 line = line.rstrip()
-                if self.on_output:
+                if self.on_output is not None:
                     self.on_output(feature_id or 0, line)
                 else:
                     # Both coding and testing agents now use [Feature #X] format
                     print(f"[Feature #{feature_id}] {line}", flush=True)
             proc.wait()
         finally:
-            # CRITICAL: Kill the process tree to clean up any child processes (e.g., Claude CLI)
-            # This prevents zombie processes from accumulating
-            try:
-                kill_process_tree(proc, timeout=2.0)
-            except Exception as e:
-                debug_log.log("CLEANUP", f"Error killing process tree for {agent_type} agent", error=str(e))
             self._on_agent_complete(feature_id, proc.returncode, agent_type, proc)
 
     def _signal_agent_completed(self):
@@ -842,8 +783,11 @@ class ParallelOrchestrator:
         """
         if agent_type == "testing":
             with self._lock:
-                # Remove by PID
-                self.running_testing_agents.pop(proc.pid, None)
+                # Remove from dict by finding the feature_id for this proc
+                for fid, p in list(self.running_testing_agents.items()):
+                    if p is proc:
+                        del self.running_testing_agents[fid]
+                        break
 
             status = "completed" if return_code == 0 else "failed"
             print(f"Feature #{feature_id} testing {status}", flush=True)
@@ -856,11 +800,12 @@ class ParallelOrchestrator:
             return
 
         # Coding agent completion
-        agent_status = "success" if return_code == 0 else "failed"
+        # feature_id is required for coding agents (always passed from start_feature)
+        assert feature_id is not None, "feature_id must not be None for coding agents"
+
         debug_log.log("COMPLETE", f"Coding agent for feature #{feature_id} finished",
             return_code=return_code,
-            status=agent_status)
-        self._logger.info("Coding agent completed", feature_id=feature_id, status=agent_status, return_code=return_code)
+            status="success" if return_code == 0 else "failed")
 
         with self._lock:
             self.running_coding_agents.pop(feature_id, None)
@@ -896,10 +841,9 @@ class ParallelOrchestrator:
                 print(f"Feature #{feature_id} has failed {failure_count} times, will not retry", flush=True)
                 debug_log.log("COMPLETE", f"Feature #{feature_id} exceeded max retries",
                     failure_count=failure_count)
-                self._logger.warning("Feature exceeded max retries", feature_id=feature_id, failure_count=failure_count)
 
         status = "completed" if return_code == 0 else "failed"
-        if self.on_status:
+        if self.on_status is not None:
             self.on_status(feature_id, status)
         # CRITICAL: This print triggers the WebSocket to emit agent_update with state='error' or 'success'
         print(f"Feature #{feature_id} {status}", flush=True)
@@ -945,16 +889,11 @@ class ParallelOrchestrator:
         with self._lock:
             testing_items = list(self.running_testing_agents.items())
 
-        for pid, (feature_id, proc) in testing_items:
+        for feature_id, proc in testing_items:
             result = kill_process_tree(proc, timeout=5.0)
-            debug_log.log("STOP", f"Killed testing agent for feature #{feature_id} (PID {pid})",
+            debug_log.log("STOP", f"Killed testing agent for feature #{feature_id} (PID {proc.pid})",
                 status=result.status, children_found=result.children_found,
                 children_terminated=result.children_terminated, children_killed=result.children_killed)
-
-        # Clear dict so get_status() doesn't report stale agents while
-        # _on_agent_complete callbacks are still in flight.
-        with self._lock:
-            self.running_testing_agents.clear()
 
     async def run_loop(self):
         """Main orchestration loop."""
@@ -1058,7 +997,7 @@ class ParallelOrchestrator:
 
         debug_log.section("FEATURE LOOP STARTING")
         loop_iteration = 0
-        while self.is_running:
+        while self.is_running and not self._shutdown_requested:
             loop_iteration += 1
             if loop_iteration <= 3:
                 print(f"[DEBUG] === Loop iteration {loop_iteration} ===", flush=True)
@@ -1119,12 +1058,6 @@ class ParallelOrchestrator:
                     continue
 
                 # Priority 2: Start new ready features
-                # CRITICAL: Dispose engine to force fresh database reads
-                # Coding agents run as subprocesses and commit changes (passes=True, in_progress=False).
-                # SQLAlchemy connection pool may cache stale connections. Disposing ensures we see
-                # all subprocess commits when checking dependencies.
-                debug_log.log("DB", "Disposing engine before get_ready_features()")
-                self._engine.dispose()
                 ready = self.get_ready_features()
                 if not ready:
                     # Wait for running features to complete
@@ -1163,40 +1096,27 @@ class ParallelOrchestrator:
                     slots_available=slots,
                     features_to_start=[f['id'] for f in features_to_start])
 
-                # Atomic UPDATE-WHERE in start_feature() provides database-level protection
-                # against race conditions. Continue to next feature if claiming fails.
-                claimed_count = 0
                 for i, feature in enumerate(features_to_start):
-                    print(f"[DEBUG] Attempting to claim feature #{feature['id']} ({i+1}/{len(features_to_start)})...", flush=True)
+                    print(f"[DEBUG] Starting feature {i+1}/{len(features_to_start)}: #{feature['id']} - {feature['name']}", flush=True)
                     success, msg = self.start_feature(feature["id"])
-
                     if not success:
-                        print(f"[DEBUG] Failed to claim feature #{feature['id']}: {msg}", flush=True)
-                        debug_log.log("SPAWN", f"Failed to claim feature #{feature['id']}",
+                        print(f"[DEBUG] Failed to start feature #{feature['id']}: {msg}", flush=True)
+                        debug_log.log("SPAWN", f"FAILED to start feature #{feature['id']}",
                             feature_name=feature['name'],
-                            error=msg,
-                            retry_strategy="continue_to_next")
-                        # Continue to next feature instead of stopping
-                        # This handles race conditions where another agent claimed it first
-                        continue
-
-                    claimed_count += 1
-                    print(f"[DEBUG] Successfully claimed feature #{feature['id']}", flush=True)
-                    with self._lock:
-                        running_count = len(self.running_coding_agents)
-                        print(f"[DEBUG] Running coding agents after start: {running_count}", flush=True)
-                    debug_log.log("SPAWN", f"Successfully claimed feature #{feature['id']}",
-                        feature_name=feature['name'],
-                        running_coding_agents=running_count)
-
-                if claimed_count < len(features_to_start):
-                    print(f"[DEBUG] Claimed {claimed_count}/{len(features_to_start)} features (some already claimed)", flush=True)
+                            error=msg)
+                    else:
+                        print(f"[DEBUG] Successfully started feature #{feature['id']}", flush=True)
+                        with self._lock:
+                            running_count = len(self.running_coding_agents)
+                            print(f"[DEBUG] Running coding agents after start: {running_count}", flush=True)
+                        debug_log.log("SPAWN", f"Successfully started feature #{feature['id']}",
+                            feature_name=feature['name'],
+                            running_coding_agents=running_count)
 
                 await asyncio.sleep(2)  # Brief pause between starts
 
             except Exception as e:
                 print(f"Orchestrator error: {e}", flush=True)
-                self._logger.error("Orchestrator loop error", error_type=type(e).__name__, message=str(e)[:200])
                 await self._wait_for_agent_completion()
 
         # Wait for remaining agents to complete
@@ -1227,35 +1147,45 @@ class ParallelOrchestrator:
             }
 
     def cleanup(self) -> None:
-        """Clean up database resources.
+        """Clean up database resources. Safe to call multiple times.
 
         CRITICAL: Must be called when orchestrator exits to prevent database corruption.
         - Forces WAL checkpoint to flush pending writes to main database file
         - Disposes engine to close all connections
 
         This prevents stale cache issues when the orchestrator restarts.
-        """
-        if self._engine is not None:
-            try:
-                debug_log.log("CLEANUP", "Forcing WAL checkpoint before dispose")
-                with self._engine.connect() as conn:
-                    conn.execute(text("PRAGMA wal_checkpoint(FULL)"))
-                    conn.commit()
-                debug_log.log("CLEANUP", "WAL checkpoint completed, disposing engine")
-            except Exception as e:
-                debug_log.log("CLEANUP", f"WAL checkpoint failed (non-fatal): {e}")
 
-            try:
-                self._engine.dispose()
-                debug_log.log("CLEANUP", "Engine disposed successfully")
-            except Exception as e:
-                debug_log.log("CLEANUP", f"Engine dispose failed: {e}")
+        Idempotency: Sets _engine=None FIRST to prevent re-entry, then performs
+        cleanup operations. This is important because cleanup() can be called
+        from multiple paths (signal handler flag, finally block, atexit handler).
+        """
+        # Atomically grab and clear the engine reference to prevent re-entry
+        engine = self._engine
+        self._engine = None
+
+        if engine is None:
+            return  # Already cleaned up
+
+        try:
+            debug_log.log("CLEANUP", "Forcing WAL checkpoint before dispose")
+            with engine.connect() as conn:
+                conn.execute(text("PRAGMA wal_checkpoint(FULL)"))
+                conn.commit()
+            debug_log.log("CLEANUP", "WAL checkpoint completed, disposing engine")
+        except Exception as e:
+            debug_log.log("CLEANUP", f"WAL checkpoint failed (non-fatal): {e}")
+
+        try:
+            engine.dispose()
+            debug_log.log("CLEANUP", "Engine disposed successfully")
+        except Exception as e:
+            debug_log.log("CLEANUP", f"Engine dispose failed: {e}")
 
 
 async def run_parallel_orchestrator(
     project_dir: Path,
     max_concurrency: int = DEFAULT_CONCURRENCY,
-    model: str = None,
+    model: str | None = None,
     yolo_mode: bool = False,
     testing_agent_ratio: int = 1,
 ) -> None:
@@ -1277,50 +1207,32 @@ async def run_parallel_orchestrator(
         testing_agent_ratio=testing_agent_ratio,
     )
 
-    # Clear any stuck features from previous interrupted sessions
-    # This is the RIGHT place to clear - BEFORE spawning any agents
-    # Agents will NO LONGER clear features on their individual startups (see agent.py fix)
-    try:
-        session = orchestrator.get_session()
-        cleared_count = 0
-
-        # Get all features marked in_progress
-        from api.database import Feature
-        stuck_features = session.query(Feature).filter(
-            Feature.in_progress == True
-        ).all()
-
-        for feature in stuck_features:
-            feature.in_progress = False
-            cleared_count += 1
-
-        session.commit()
-        session.close()
-
-        if cleared_count > 0:
-            print(f"[ORCHESTRATOR] Cleared {cleared_count} stuck features from previous session", flush=True)
-
-    except Exception as e:
-        print(f"[ORCHESTRATOR] Warning: Failed to clear stuck features: {e}", flush=True)
-
     # Set up cleanup to run on exit (handles normal exit, exceptions, signals)
     def cleanup_handler():
-        debug_log.log("CLEANUP", "Cleanup handler invoked")
+        debug_log.log("CLEANUP", "atexit cleanup handler invoked")
         orchestrator.cleanup()
 
     atexit.register(cleanup_handler)
 
-    # Set up signal handlers for graceful shutdown (SIGTERM, SIGINT)
+    # Set up async-safe signal handler for graceful shutdown
+    # IMPORTANT: Signal handlers run in the main thread's context and must be async-safe.
+    # Only setting flags is safe; file I/O, locks, and subprocess operations are NOT safe.
     def signal_handler(signum, frame):
-        debug_log.log("SIGNAL", f"Received signal {signum}, initiating cleanup")
-        print(f"\nReceived signal {signum}. Stopping agents...", flush=True)
-        orchestrator.stop_all()
-        orchestrator.cleanup()
-        sys.exit(0)
+        # Only set flags - everything else is unsafe in signal context
+        # The main loop checks _shutdown_requested and handles cleanup on safe code path
+        orchestrator._shutdown_requested = True
+        orchestrator.is_running = False
+        # Note: Don't call stop_all(), cleanup(), or sys.exit() here - those are unsafe
+        # The finally block and atexit handler will perform cleanup
 
-    # Register signal handlers (SIGTERM for process termination, SIGINT for Ctrl+C)
+    # Register SIGTERM handler for process termination signals
+    # Note: On Windows, SIGTERM works but subprocess termination behavior differs.
+    # Windows uses CTRL_C_EVENT/CTRL_BREAK_EVENT instead of Unix signals.
+    # The kill_process_tree() in process_utils.py handles this via psutil.
     signal.signal(signal.SIGTERM, signal_handler)
-    signal.signal(signal.SIGINT, signal_handler)
+
+    # Note: We intentionally do NOT register SIGINT handler
+    # Let Python raise KeyboardInterrupt naturally so the except block works
 
     try:
         await orchestrator.run_loop()
