@@ -45,6 +45,8 @@ class ProjectSummary(BaseModel):
     path: str
     has_spec: bool
     stats: ProjectStats
+    default_concurrency: int = 3
+    is_detached: bool = False  # True if Autocoder files moved to backup
 
 
 class ProjectDetail(BaseModel):
@@ -54,6 +56,7 @@ class ProjectDetail(BaseModel):
     has_spec: bool
     stats: ProjectStats
     prompts_dir: str
+    default_concurrency: int = 3
 
 
 class ProjectPrompts(BaseModel):
@@ -63,11 +66,52 @@ class ProjectPrompts(BaseModel):
     coding_prompt: str = ""
 
 
+# ============================================================================
+# Detach/Reattach Schemas
+# ============================================================================
+
+class DetachResponse(BaseModel):
+    """Response schema for detach operation."""
+    success: bool
+    files_moved: int
+    backup_size: int
+    backup_path: str
+    message: str = ""
+
+
+class ReattachResponse(BaseModel):
+    """Response schema for reattach operation."""
+    success: bool
+    files_restored: int
+    message: str = ""
+
+
+class DetachStatusResponse(BaseModel):
+    """Response schema for detach status check."""
+    is_detached: bool
+    backup_exists: bool
+    backup_size: int | None = None
+    detached_at: str | None = None
+    file_count: int | None = None
+
+
 class ProjectPromptsUpdate(BaseModel):
     """Request schema for updating project prompts."""
     app_spec: str | None = None
     initializer_prompt: str | None = None
     coding_prompt: str | None = None
+
+
+class ProjectSettingsUpdate(BaseModel):
+    """Request schema for updating project-level settings."""
+    default_concurrency: int | None = None
+
+    @field_validator('default_concurrency')
+    @classmethod
+    def validate_concurrency(cls, v: int | None) -> int | None:
+        if v is not None and (v < 1 or v > 5):
+            raise ValueError("default_concurrency must be between 1 and 5")
+        return v
 
 
 # ============================================================================

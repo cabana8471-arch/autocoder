@@ -107,6 +107,8 @@ def test_extract_commands():
         ("/usr/bin/node script.js", ["node"]),
         ("VAR=value ls", ["ls"]),
         ("git status || git init", ["git", "git"]),
+        # Fallback parser test: complex nested quotes that break shlex
+        ('docker exec container php -r "echo \\"test\\";"', ["docker"]),
     ]
 
     for cmd, expected in test_cases:

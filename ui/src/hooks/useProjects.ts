@@ -4,7 +4,7 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import * as api from '../lib/api'
-import type { FeatureCreate, FeatureUpdate, ModelsResponse, Settings, SettingsUpdate } from '../lib/types'
+import type { FeatureCreate, FeatureUpdate, ModelsResponse, ProjectSettingsUpdate, Settings, SettingsUpdate } from '../lib/types'
 
 // ============================================================================
 // Projects
@@ -42,6 +42,55 @@ export function useDeleteProject() {
 
   return useMutation({
     mutationFn: (name: string) => api.deleteProject(name),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['projects'] })
+    },
+  })
+}
+
+export function useResetProject(projectName: string) {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (fullReset: boolean) => api.resetProject(projectName, fullReset),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['projects'] })
+      queryClient.invalidateQueries({ queryKey: ['project', projectName] })
+      queryClient.invalidateQueries({ queryKey: ['features', projectName] })
+      queryClient.invalidateQueries({ queryKey: ['agent-status', projectName] })
+    },
+  })
+}
+
+export function useUpdateProjectSettings(projectName: string) {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (settings: ProjectSettingsUpdate) =>
+      api.updateProjectSettings(projectName, settings),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['projects'] })
+      queryClient.invalidateQueries({ queryKey: ['project', projectName] })
+    },
+  })
+}
+
+export function useDetachProject() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (name: string) => api.detachProject(name),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['projects'] })
+    },
+  })
+}
+
+export function useReattachProject() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (name: string) => api.reattachProject(name),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['projects'] })
     },

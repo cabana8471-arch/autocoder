@@ -14,12 +14,16 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 
 from ..schemas import (
+    DetachResponse,
+    DetachStatusResponse,
     ProjectCreate,
     ProjectDetail,
     ProjectPrompts,
     ProjectPromptsUpdate,
+    ProjectSettingsUpdate,
     ProjectStats,
     ProjectSummary,
+    ReattachResponse,
 )
 
 # Lazy imports to avoid circular dependencies
@@ -28,13 +32,14 @@ _check_spec_exists = None
 _scaffold_project_prompts = None
 _get_project_prompts_dir = None
 _count_passing_tests = None
+_detach_module = None
 
 
 def _init_imports():
     """Lazy import of project-level modules."""
     global _imports_initialized, _check_spec_exists
     global _scaffold_project_prompts, _get_project_prompts_dir
-    global _count_passing_tests
+    global _count_passing_tests, _detach_module
 
     if _imports_initialized:
         return
@@ -44,6 +49,7 @@ def _init_imports():
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
 
+    import detach as detach_module
     from progress import count_passing_tests
     from prompts import get_project_prompts_dir, scaffold_project_prompts
     from start import check_spec_exists
@@ -52,6 +58,7 @@ def _init_imports():
     _scaffold_project_prompts = scaffold_project_prompts
     _get_project_prompts_dir = get_project_prompts_dir
     _count_passing_tests = count_passing_tests
+    _detach_module = detach_module
     _imports_initialized = True
 
 
@@ -63,13 +70,23 @@ def _get_registry_functions():
         sys.path.insert(0, str(root))
 
     from registry import (
+        get_project_concurrency,
         get_project_path,
         list_registered_projects,
         register_project,
+        set_project_concurrency,
         unregister_project,
         validate_project_path,
     )
-    return register_project, unregister_project, get_project_path, list_registered_projects, validate_project_path
+    return (
+        register_project,
+        unregister_project,
+        get_project_path,
+        list_registered_projects,
+        validate_project_path,
+        get_project_concurrency,
+        set_project_concurrency,
+    )
 
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -102,7 +119,8 @@ def get_project_stats(project_dir: Path) -> ProjectStats:
 async def list_projects():
     """List all registered projects."""
     _init_imports()
-    _, _, _, list_registered_projects, validate_project_path = _get_registry_functions()
+    (_, _, _, list_registered_projects, validate_project_path,
+     get_project_concurrency, _) = _get_registry_functions()
 
     projects = list_registered_projects()
     result = []
@@ -117,12 +135,15 @@ async def list_projects():
 
         has_spec = _check_spec_exists(project_dir)
         stats = get_project_stats(project_dir)
+        is_detached = _detach_module.is_project_detached(project_dir)
 
         result.append(ProjectSummary(
             name=name,
             path=info["path"],
             has_spec=has_spec,
             stats=stats,
+            default_concurrency=info.get("default_concurrency", 3),
+            is_detached=is_detached,
         ))
 
     return result
@@ -132,7 +153,8 @@ async def list_projects():
 async def create_project(project: ProjectCreate):
     """Create a new project at the specified path."""
     _init_imports()
-    register_project, _, get_project_path, list_registered_projects, _ = _get_registry_functions()
+    (register_project, _, get_project_path, list_registered_projects,
+     _, _, _) = _get_registry_functions()
 
     name = validate_project_name(project.name)
     project_path = Path(project.path).resolve()
@@ -203,6 +225,7 @@ async def create_project(project: ProjectCreate):
         path=project_path.as_posix(),
         has_spec=False,  # Just created, no spec yet
         stats=ProjectStats(passing=0, total=0, percentage=0.0),
+        default_concurrency=3,
     )
 
 
@@ -210,7 +233,7 @@ async def create_project(project: ProjectCreate):
 async def get_project(name: str):
     """Get detailed information about a project."""
     _init_imports()
-    _, _, get_project_path, _, _ = _get_registry_functions()
+    (_, _, get_project_path, _, _, get_project_concurrency, _) = _get_registry_functions()
 
     name = validate_project_name(name)
     project_dir = get_project_path(name)
@@ -231,6 +254,7 @@ async def get_project(name: str):
         has_spec=has_spec,
         stats=stats,
         prompts_dir=str(prompts_dir),
+        default_concurrency=get_project_concurrency(name),
     )
 
 
@@ -244,7 +268,7 @@ async def delete_project(name: str, delete_files: bool = False):
         delete_files: If True, also delete the project directory and files
     """
     _init_imports()
-    _, unregister_project, get_project_path, _, _ = _get_registry_functions()
+    (_, unregister_project, get_project_path, _, _, _, _) = _get_registry_functions()
 
     name = validate_project_name(name)
     project_dir = get_project_path(name)
@@ -280,7 +304,7 @@ async def delete_project(name: str, delete_files: bool = False):
 async def get_project_prompts(name: str):
     """Get the content of project prompt files."""
     _init_imports()
-    _, _, get_project_path, _, _ = _get_registry_functions()
+    (_, _, get_project_path, _, _, _, _) = _get_registry_functions()
 
     name = validate_project_name(name)
     project_dir = get_project_path(name)
@@ -313,7 +337,7 @@ async def get_project_prompts(name: str):
 async def update_project_prompts(name: str, prompts: ProjectPromptsUpdate):
     """Update project prompt files."""
     _init_imports()
-    _, _, get_project_path, _, _ = _get_registry_functions()
+    (_, _, get_project_path, _, _, _, _) = _get_registry_functions()
 
     name = validate_project_name(name)
     project_dir = get_project_path(name)
@@ -343,7 +367,7 @@ async def update_project_prompts(name: str, prompts: ProjectPromptsUpdate):
 async def get_project_stats_endpoint(name: str):
     """Get current progress statistics for a project."""
     _init_imports()
-    _, _, get_project_path, _, _ = _get_registry_functions()
+    (_, _, get_project_path, _, _, _, _) = _get_registry_functions()
 
     name = validate_project_name(name)
     project_dir = get_project_path(name)
@@ -355,3 +379,231 @@ async def get_project_stats_endpoint(name: str):
         raise HTTPException(status_code=404, detail="Project directory not found")
 
     return get_project_stats(project_dir)
+
+
+@router.post("/{name}/reset")
+async def reset_project(name: str, full_reset: bool = False):
+    """
+    Reset a project to its initial state.
+
+    Args:
+        name: Project name to reset
+        full_reset: If True, also delete prompts/ directory (triggers setup wizard)
+
+    Returns:
+        Dictionary with list of deleted files and reset type
+    """
+    _init_imports()
+    (_, _, get_project_path, _, _, _, _) = _get_registry_functions()
+
+    name = validate_project_name(name)
+    project_dir = get_project_path(name)
+
+    if not project_dir:
+        raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
+
+    if not project_dir.exists():
+        raise HTTPException(status_code=404, detail="Project directory not found")
+
+    # Check if agent is running
+    lock_file = project_dir / ".agent.lock"
+    if lock_file.exists():
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot reset project while agent is running. Stop the agent first."
+        )
+
+    # Dispose of database engines to release file locks (required on Windows)
+    # Import here to avoid circular imports
+    from api.database import dispose_engine as dispose_features_engine
+    from server.services.assistant_database import dispose_engine as dispose_assistant_engine
+
+    dispose_features_engine(project_dir)
+    dispose_assistant_engine(project_dir)
+
+    deleted_files: list[str] = []
+
+    # Files to delete in quick reset
+    quick_reset_files = [
+        "features.db",
+        "features.db-wal",  # WAL mode journal file
+        "features.db-shm",  # WAL mode shared memory file
+        "assistant.db",
+        "assistant.db-wal",
+        "assistant.db-shm",
+        ".claude_settings.json",
+        ".claude_assistant_settings.json",
+    ]
+
+    for filename in quick_reset_files:
+        file_path = project_dir / filename
+        if file_path.exists():
+            try:
+                file_path.unlink()
+                deleted_files.append(filename)
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to delete {filename}: {e}")
+
+    # Full reset: also delete prompts directory
+    if full_reset:
+        prompts_dir = project_dir / "prompts"
+        if prompts_dir.exists():
+            try:
+                shutil.rmtree(prompts_dir)
+                deleted_files.append("prompts/")
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to delete prompts/: {e}")
+
+    return {
+        "success": True,
+        "reset_type": "full" if full_reset else "quick",
+        "deleted_files": deleted_files,
+        "message": f"Project '{name}' has been reset" + (" (full reset)" if full_reset else " (quick reset)")
+    }
+
+
+@router.patch("/{name}/settings", response_model=ProjectDetail)
+async def update_project_settings(name: str, settings: ProjectSettingsUpdate):
+    """Update project-level settings (concurrency, etc.)."""
+    _init_imports()
+    (_, _, get_project_path, _, _, get_project_concurrency,
+     set_project_concurrency) = _get_registry_functions()
+
+    name = validate_project_name(name)
+    project_dir = get_project_path(name)
+
+    if not project_dir:
+        raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
+
+    if not project_dir.exists():
+        raise HTTPException(status_code=404, detail="Project directory not found")
+
+    # Update concurrency if provided
+    if settings.default_concurrency is not None:
+        success = set_project_concurrency(name, settings.default_concurrency)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to update concurrency")
+
+    # Return updated project details
+    has_spec = _check_spec_exists(project_dir)
+    stats = get_project_stats(project_dir)
+    prompts_dir = _get_project_prompts_dir(project_dir)
+
+    return ProjectDetail(
+        name=name,
+        path=project_dir.as_posix(),
+        has_spec=has_spec,
+        stats=stats,
+        prompts_dir=str(prompts_dir),
+        default_concurrency=get_project_concurrency(name),
+    )
+
+
+# ============================================================================
+# Detach/Reattach Endpoints
+# ============================================================================
+
+@router.get("/{name}/detach-status", response_model=DetachStatusResponse)
+async def get_detach_status(name: str):
+    """Check if a project is detached and get backup info."""
+    _init_imports()
+    (_, _, get_project_path, _, _, _, _) = _get_registry_functions()
+
+    name = validate_project_name(name)
+    project_dir = get_project_path(name)
+
+    if not project_dir:
+        raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
+
+    if not project_dir.exists():
+        raise HTTPException(status_code=404, detail="Project directory not found")
+
+    status = _detach_module.get_detach_status(name)
+
+    return DetachStatusResponse(
+        is_detached=status["is_detached"],
+        backup_exists=status["backup_exists"],
+        backup_size=status.get("backup_size"),
+        detached_at=status.get("detached_at"),
+        file_count=status.get("file_count"),
+    )
+
+
+@router.post("/{name}/detach", response_model=DetachResponse)
+async def detach_project(name: str):
+    """
+    Detach a project by moving Autocoder files to backup.
+
+    This allows Claude Code to run without Autocoder restrictions.
+    Files can be restored later with reattach.
+    """
+    _init_imports()
+    (_, _, get_project_path, _, _, _, _) = _get_registry_functions()
+
+    name = validate_project_name(name)
+    project_dir = get_project_path(name)
+
+    if not project_dir:
+        raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
+
+    if not project_dir.exists():
+        raise HTTPException(status_code=404, detail="Project directory not found")
+
+    # Check if agent is running
+    lock_file = project_dir / ".agent.lock"
+    if lock_file.exists():
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot detach while agent is running. Stop the agent first."
+        )
+
+    success, message, manifest = _detach_module.detach_project(
+        name,
+        force=False,
+        include_artifacts=True,
+        dry_run=False,
+    )
+
+    if not success:
+        raise HTTPException(status_code=400, detail=message)
+
+    backup_path = project_dir / _detach_module.BACKUP_DIR
+
+    return DetachResponse(
+        success=True,
+        files_moved=manifest["file_count"] if manifest else 0,
+        backup_size=manifest["total_size_bytes"] if manifest else 0,
+        backup_path=str(backup_path),
+        message=message,
+    )
+
+
+@router.post("/{name}/reattach", response_model=ReattachResponse)
+async def reattach_project(name: str):
+    """
+    Reattach a project by restoring Autocoder files from backup.
+
+    This restores all Autocoder files and re-enables restrictions.
+    """
+    _init_imports()
+    (_, _, get_project_path, _, _, _, _) = _get_registry_functions()
+
+    name = validate_project_name(name)
+    project_dir = get_project_path(name)
+
+    if not project_dir:
+        raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
+
+    if not project_dir.exists():
+        raise HTTPException(status_code=404, detail="Project directory not found")
+
+    success, message, files_restored = _detach_module.reattach_project(name)
+
+    if not success:
+        raise HTTPException(status_code=400, detail=message)
+
+    return ReattachResponse(
+        success=True,
+        files_restored=files_restored,
+        message=message,
+    )
