@@ -46,6 +46,7 @@ class ProjectSummary(BaseModel):
     has_spec: bool
     stats: ProjectStats
     default_concurrency: int = 3
+    is_detached: bool = False  # True if Autocoder files moved to backup
 
 
 class ProjectDetail(BaseModel):
@@ -63,6 +64,35 @@ class ProjectPrompts(BaseModel):
     app_spec: str = ""
     initializer_prompt: str = ""
     coding_prompt: str = ""
+
+
+# ============================================================================
+# Detach/Reattach Schemas
+# ============================================================================
+
+class DetachResponse(BaseModel):
+    """Response schema for detach operation."""
+    success: bool
+    files_moved: int
+    backup_size: int
+    backup_path: str
+    message: str = ""
+
+
+class ReattachResponse(BaseModel):
+    """Response schema for reattach operation."""
+    success: bool
+    files_restored: int
+    message: str = ""
+
+
+class DetachStatusResponse(BaseModel):
+    """Response schema for detach status check."""
+    is_detached: bool
+    backup_exists: bool
+    backup_size: int | None = None
+    detached_at: str | None = None
+    file_count: int | None = None
 
 
 class ProjectPromptsUpdate(BaseModel):
