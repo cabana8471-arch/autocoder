@@ -165,6 +165,7 @@ def _migrate_add_default_concurrency(engine) -> None:
                 "ALTER TABLE projects ADD COLUMN default_concurrency INTEGER DEFAULT 3"
             ))
             conn.commit()
+            logger.info("Migrated projects table: added default_concurrency column")
 
 
 @contextmanager
@@ -322,7 +323,8 @@ def list_registered_projects() -> dict[str, dict[str, Any]]:
         return {
             p.name: {
                 "path": p.path,
-                "created_at": p.created_at.isoformat() if p.created_at else None
+                "created_at": p.created_at.isoformat() if p.created_at else None,
+                "default_concurrency": getattr(p, 'default_concurrency', 3) or 3
             }
             for p in projects
         }
@@ -348,7 +350,8 @@ def get_project_info(name: str) -> dict[str, Any] | None:
             return None
         return {
             "path": project.path,
-            "created_at": project.created_at.isoformat() if project.created_at else None
+            "created_at": project.created_at.isoformat() if project.created_at else None,
+            "default_concurrency": getattr(project, 'default_concurrency', 3) or 3
         }
     finally:
         session.close()
@@ -374,6 +377,55 @@ def update_project_path(name: str, new_path: Path) -> bool:
 
         project.path = new_path.as_posix()
 
+    return True
+
+
+def get_project_concurrency(name: str) -> int:
+    """
+    Get project's default concurrency (1-5).
+
+    Args:
+        name: The project name.
+
+    Returns:
+        The default concurrency value (defaults to 3 if not set or project not found).
+    """
+    _, SessionLocal = _get_engine()
+    session = SessionLocal()
+    try:
+        project = session.query(Project).filter(Project.name == name).first()
+        if project is None:
+            return 3
+        return getattr(project, 'default_concurrency', 3) or 3
+    finally:
+        session.close()
+
+
+def set_project_concurrency(name: str, concurrency: int) -> bool:
+    """
+    Set project's default concurrency (1-5).
+
+    Args:
+        name: The project name.
+        concurrency: The concurrency value (1-5).
+
+    Returns:
+        True if updated, False if project wasn't found.
+
+    Raises:
+        ValueError: If concurrency is not between 1 and 5.
+    """
+    if concurrency < 1 or concurrency > 5:
+        raise ValueError("concurrency must be between 1 and 5")
+
+    with _get_session() as session:
+        project = session.query(Project).filter(Project.name == name).first()
+        if not project:
+            return False
+
+        project.default_concurrency = concurrency
+
+    logger.info("Set project '%s' default_concurrency to %d", name, concurrency)
     return True
 
 
