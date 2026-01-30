@@ -418,6 +418,8 @@ class SecurityScanner:
                 cwd=self.project_dir,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",  # Fix Windows CP1252 encoding issue (#138)
+                errors="replace",
                 timeout=120,
             )
 
@@ -477,6 +479,8 @@ class SecurityScanner:
                     cwd=self.project_dir,
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",  # Fix Windows CP1252 encoding issue (#138)
+                    errors="replace",
                     timeout=120,
                 )
 
@@ -522,6 +526,8 @@ class SecurityScanner:
                     cwd=self.project_dir,
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",  # Fix Windows CP1252 encoding issue (#138)
+                    errors="replace",
                     timeout=120,
                 )
 

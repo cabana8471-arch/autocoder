@@ -518,6 +518,8 @@ class ParallelOrchestrator:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding="utf-8",  # Fix Windows CP1252 encoding issue (#138)
+                errors="replace",
                 cwd=str(AUTOCODER_ROOT),
                 env={**os.environ, "PYTHONUNBUFFERED": "1"},
             )
@@ -601,6 +603,8 @@ class ParallelOrchestrator:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
+                    encoding="utf-8",  # Fix Windows CP1252 encoding issue (#138)
+                    errors="replace",
                     cwd=str(AUTOCODER_ROOT),
                     env={**os.environ, "PYTHONUNBUFFERED": "1"},
                 )
@@ -652,6 +656,8 @@ class ParallelOrchestrator:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",  # Fix Windows CP1252 encoding issue (#138)
+            errors="replace",
             cwd=str(AUTOCODER_ROOT),
             env={**os.environ, "PYTHONUNBUFFERED": "1"},
         )
