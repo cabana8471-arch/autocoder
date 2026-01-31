@@ -568,7 +568,7 @@ def detach_project(name: str):
     # The detach module will return an appropriate error message if agent is running.
 
     assert _detach_module is not None
-    success, message, manifest = _detach_module.detach_project(
+    success, message, manifest, user_files_restored = _detach_module.detach_project(
         name,
         force=False,
         include_artifacts=True,
@@ -591,6 +591,7 @@ def detach_project(name: str):
         backup_size=manifest["total_size_bytes"] if manifest else 0,
         backup_path=_detach_module.BACKUP_DIR,  # Return relative path, not absolute
         message=message,
+        user_files_restored=user_files_restored,
     )
 
 
@@ -625,7 +626,7 @@ def reattach_project(name: str):
         )
 
     assert _detach_module is not None
-    success, message, files_restored = _detach_module.reattach_project(name)
+    success, message, files_restored, conflicts = _detach_module.reattach_project(name)
 
     if not success:
         # Map common error messages to appropriate HTTP status codes
@@ -637,4 +638,6 @@ def reattach_project(name: str):
         success=True,
         files_restored=files_restored,
         message=message,
+        conflicts=conflicts,
+        conflicts_backup_path=_detach_module.PRE_REATTACH_BACKUP_DIR if conflicts else None,
     )
