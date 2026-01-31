@@ -59,9 +59,6 @@ async def _make_multimodal_message(content_blocks: list[dict]) -> AsyncGenerator
         "session_id": "default",
     }
 
-# Root directory of the project
-ROOT_DIR = Path(__file__).parent.parent.parent
-
 
 class SpecChatSession:
     """
