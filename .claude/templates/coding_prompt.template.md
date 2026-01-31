@@ -141,6 +141,14 @@ Use browser automation tools:
 
 **You MUST complete ALL of these checks before marking any feature as "passes": true**
 
+#### UI & Design Verification (if UI components are involved)
+
+- [ ] Used MCP tools for component generation when available (`mcp__ui_components__*`)
+- [ ] Components follow the project's visual style (check `app_spec.txt` for style setting)
+- [ ] If design tokens exist (`.autocoder/design-tokens.json`), styling matches the tokens
+- [ ] Components are accessible (proper ARIA labels, keyboard navigation)
+- [ ] Responsive at desktop (1920px), tablet (768px), and mobile (375px)
+
 #### Security Verification (for protected features)
 
 - [ ] Feature respects user role permissions
@@ -349,6 +357,28 @@ When uploading files via browser automation:
 ### Unavailable Browser Tools
 
 - `browser_run_code` - DO NOT USE. This tool causes the Playwright MCP server to crash. Use `browser_evaluate` instead for executing JavaScript in the browser context.
+
+---
+
+## UI COMPONENT GENERATION
+
+When building UI components, check if MCP tools are available for component generation:
+
+- `mcp__ui_components__list_components` - See all available components in the library
+- `mcp__ui_components__get_example` - Get implementation code for a component
+- `mcp__ui_components__styling_guide` - Understand the styling approach
+
+**If these tools are available**, use them to generate components quickly instead of building from scratch.
+
+**If these tools are NOT available**, use the frontend-design skill for component creation:
+- Invoke `/frontend-design` for complex UI components
+- Follow the project's visual style from `app_spec.txt`
+- Check `.autocoder/design-tokens.json` for style tokens if they exist
+
+**Visual Style Application:**
+1. Read the `<visual_style>` section in `app_spec.txt`
+2. If a design tokens file exists, apply those values to your CSS/Tailwind
+3. Maintain consistency across all components
 
 ---
 
