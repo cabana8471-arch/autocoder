@@ -802,6 +802,44 @@ class TestReattachProject(unittest.TestCase):
         self.assertEqual(files_restored, 0)
         self.assertEqual(conflicts, [])
 
+    @patch('detach.get_project_path')
+    def test_reattach_fails_when_already_attached(self, mock_get_path):
+        """Should fail if project is already attached (no backup, files at root)."""
+        mock_get_path.return_value = self.project_dir
+
+        # Remove backup but keep files at root
+        shutil.rmtree(self.project_dir / detach.BACKUP_DIR)
+        (self.project_dir / "features.db").write_bytes(b"test")
+        (self.project_dir / ".autocoder").mkdir()
+
+        success, message, files_restored, conflicts = detach.reattach_project("test-project")
+
+        self.assertFalse(success)
+        self.assertIn("already attached", message)
+        self.assertEqual(files_restored, 0)
+        self.assertEqual(conflicts, [])
+
+    @patch('detach.get_project_path')
+    def test_reattach_handles_inconsistent_state_by_restoring(self, mock_get_path):
+        """Should restore from backup even if some files exist at root (user-created).
+
+        This handles the case where user creates files while detached.
+        The conflicting files get backed up to .pre-reattach-backup/ before restore.
+        """
+        mock_get_path.return_value = self.project_dir
+
+        # Backup exists from setUp (with features.db and .autocoder in backup)
+        # Add files at root too (simulates user creating files while detached)
+        (self.project_dir / "features.db").write_bytes(b"user-created")
+        (self.project_dir / ".autocoder").mkdir()
+
+        success, message, files_restored, conflicts = detach.reattach_project("test-project")
+
+        # Should succeed - user files get backed up, autocoder files restored
+        self.assertTrue(success)
+        self.assertIn("features.db", conflicts)  # User file was backed up
+        self.assertGreater(files_restored, 0)
+
 
 class TestGitignoreUpdate(unittest.TestCase):
     """Tests for update_gitignore function."""
