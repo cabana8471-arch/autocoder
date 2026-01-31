@@ -925,7 +925,12 @@ def reattach_project(name_or_path: str) -> tuple[bool, str, int, list[str]]:
 
     # Check if backup exists
     if not has_backup(project_dir):
+        # Distinguish between "attached" (files at root) and "clean" (no files)
+        files_at_root = get_autocoder_files(project_dir)
+        if files_at_root:
+            return False, "Project is already attached. Nothing to restore.", 0, []
         return False, "No backup found. Project is not detached.", 0, []
+    # Backup exists - proceed with restore (handles "detached" and "inconsistent" states)
 
     # Acquire detach lock
     if not acquire_detach_lock(project_dir):

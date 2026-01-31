@@ -569,6 +569,12 @@ def detach_project(name: str):
     # Note: Agent lock check is handled inside detach_project() to avoid TOCTOU race.
     # The detach module will return an appropriate error message if agent is running.
 
+    # Dispose cached database engines before detach to release file locks (Windows)
+    from api.database import dispose_engine as dispose_features_engine
+    from server.services.assistant_database import dispose_engine as dispose_assistant_engine
+    dispose_features_engine(project_dir)
+    dispose_assistant_engine(project_dir)
+
     assert _detach_module is not None
     success, message, manifest, user_files_restored = _detach_module.detach_project(
         name,
@@ -634,7 +640,15 @@ def reattach_project(name: str):
         # Map common error messages to appropriate HTTP status codes
         if "in progress" in message:
             raise HTTPException(status_code=409, detail=message)
+        elif "already attached" in message:
+            raise HTTPException(status_code=409, detail=message)
         raise HTTPException(status_code=400, detail=message)
+
+    # Dispose cached database engines so next request gets fresh connection
+    from api.database import dispose_engine as dispose_features_engine
+    from server.services.assistant_database import dispose_engine as dispose_assistant_engine
+    dispose_features_engine(project_dir)
+    dispose_assistant_engine(project_dir)
 
     return ReattachResponse(
         success=True,
