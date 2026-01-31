@@ -460,6 +460,7 @@ def create_backup(
 
         # Phase 3: Delete originals (only after successful copy + manifest)
         phase = 3
+        logger.debug("Phase 3: Deleting %d original files", len(files))
         for file_path in files:
             if file_path.is_dir() and not file_path.is_symlink():
                 shutil.rmtree(file_path)
@@ -850,6 +851,14 @@ def detach_project(
     elif state == "clean":
         return False, "No Autocoder files found in project.", None, 0
     # state == "attached" -> proceed normally with existing_files
+
+    # Clean up orphaned backup directory (exists without manifest)
+    # This can happen after partial reattach removes manifest but keeps backup files
+    backup_dir = project_dir / BACKUP_DIR
+    if backup_dir.exists() and not (backup_dir / MANIFEST_FILE).exists():
+        if not dry_run:
+            shutil.rmtree(backup_dir)
+            logger.info("Removed orphaned backup directory (no manifest)")
 
     # Check for agent lock
     agent_lock = project_dir / ".agent.lock"
