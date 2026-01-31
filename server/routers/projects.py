@@ -262,6 +262,7 @@ async def get_project(name: str):
         stats=stats,
         prompts_dir=str(prompts_dir),
         default_concurrency=get_project_concurrency(name),
+        is_detached=_detach_module.is_project_detached(project_dir),
     )
 
 
@@ -507,6 +508,7 @@ async def update_project_settings(name: str, settings: ProjectSettingsUpdate):
         stats=stats,
         prompts_dir=str(prompts_dir),
         default_concurrency=get_project_concurrency(name),
+        is_detached=_detach_module.is_project_detached(project_dir),
     )
 
 
