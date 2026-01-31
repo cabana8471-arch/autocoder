@@ -140,7 +140,7 @@ def compute_file_checksum(file_path: Path, algorithm: str = "sha256") -> str:
         Hex digest of the file checksum
     """
     if algorithm == "md5":
-        hasher = hashlib.md5()
+        hasher = hashlib.md5(usedforsecurity=False)
     else:
         hasher = hashlib.sha256()
     with open(file_path, "rb") as f:
@@ -429,7 +429,6 @@ def create_backup(
 
     # Create backup directory
     backup_dir.mkdir(parents=True, exist_ok=True)
-    copied_files: list[Path] = []
     phase = 1  # Track phase: 1=Copy, 2=Manifest, 3=Delete originals
 
     try:
@@ -451,7 +450,6 @@ def create_backup(
             else:
                 shutil.copy2(file_path, dest_path)
 
-            copied_files.append(file_path)
             logger.debug("Copied %s to backup", relative_path)
 
         # Phase 2: Write manifest (before deleting originals)
@@ -1073,8 +1071,8 @@ Examples:
 
     try:
         args = parser.parse_args()
-    except SystemExit:
-        return 1
+    except SystemExit as e:
+        return e.code if e.code else 0
 
     # Configure logging
     logging.basicConfig(
