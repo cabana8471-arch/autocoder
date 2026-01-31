@@ -14,7 +14,7 @@ import json
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, cast
 
 import yaml
 
@@ -41,7 +41,7 @@ class WorkflowJob:
 
     def to_dict(self) -> dict:
         """Convert to workflow YAML format."""
-        result = {
+        result: dict[str, Any] = {
             "name": self.name,
             "runs-on": self.runs_on,
             "steps": self.steps,
@@ -604,6 +604,6 @@ def generate_all_workflows(project_dir: Path, save: bool = True) -> dict[str, Gi
     workflows = {}
     for workflow_type in ["ci", "security", "deploy"]:
         workflows[workflow_type] = generate_github_workflow(
-            project_dir, workflow_type, save
+            project_dir, cast(Literal["ci", "security", "deploy"], workflow_type), save
         )
     return workflows

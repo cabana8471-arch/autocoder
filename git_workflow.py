@@ -18,7 +18,7 @@ import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal, Optional, cast
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +114,7 @@ class GitWorkflow:
         self.main_branch = main_branch
         self.auto_merge = auto_merge
 
-    def _run_git(self, *args, check: bool = True) -> subprocess.CompletedProcess:
+    def _run_git(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
         """Run a git command in the project directory."""
         cmd = ["git"] + list(args)
         return subprocess.run(
@@ -507,14 +507,14 @@ def get_workflow(project_dir: Path) -> GitWorkflow:
     auto_merge = False
 
     try:
-        from server.services.autocoder_config import load_config
+        from server.services.autocoder_config import load_autocoder_config
 
-        config = load_config(project_dir)
+        config = load_autocoder_config(project_dir)
         git_config = config.get("git_workflow", {})
 
-        mode = git_config.get("mode", "trunk")
-        branch_prefix = git_config.get("branch_prefix", "feature/")
-        main_branch = git_config.get("main_branch", "main")
+        mode = cast(WorkflowMode, git_config.get("mode", "trunk"))
+        branch_prefix = str(git_config.get("branch_prefix", "feature/"))
+        main_branch = str(git_config.get("main_branch", "main"))
         auto_merge = git_config.get("auto_merge", False)
     except Exception:
         pass

@@ -184,7 +184,7 @@ def list_templates() -> list[Template]:
     Returns:
         List of Template instances
     """
-    templates = []
+    templates: list[Template] = []
 
     if not TEMPLATES_DIR.exists():
         return templates
