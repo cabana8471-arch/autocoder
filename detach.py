@@ -603,7 +603,14 @@ def restore_backup(project_dir: Path, verify_checksums: bool = False) -> tuple[b
                 os.close(temp_fd)
                 shutil.copy2(src_path, temp_path)
 
-                # Atomic replace (removes existing destination automatically for files)
+                # Remove existing destination if needed (handles dir where file should be)
+                if dest_path.exists():
+                    if dest_path.is_dir() and not dest_path.is_symlink():
+                        shutil.rmtree(dest_path)
+                    else:
+                        dest_path.unlink()
+
+                # Atomic replace
                 os.replace(temp_path, dest_path)
                 temp_path = None  # Successfully moved, no cleanup needed
 
