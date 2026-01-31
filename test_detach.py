@@ -60,13 +60,21 @@ class TestGetAutocoderFiles(unittest.TestCase):
         self.assertEqual(files[0].name, "CLAUDE.md")
 
     def test_detects_glob_patterns(self):
-        """Should detect files matching glob patterns."""
-        (self.project_dir / "test-login.json").touch()
-        (self.project_dir / "test-api.py").touch()
-        (self.project_dir / "generate-data.py").touch()
+        """Should detect files matching glob patterns in Autocoder directories.
+
+        Patterns are only matched within .autocoder/, prompts/, and .playwright-mcp/
+        to avoid accidentally moving user files like test-myfeature.py at root.
+        """
+        # Create Autocoder directory structure
+        (self.project_dir / ".autocoder").mkdir()
+        (self.project_dir / ".autocoder" / "test-login.json").touch()
+        (self.project_dir / ".autocoder" / "test-api.py").touch()
+        (self.project_dir / ".autocoder" / "generate-data.py").touch()
         files = detach.get_autocoder_files(self.project_dir)
-        self.assertEqual(len(files), 3)
+        # 1 directory + 3 pattern-matched files
+        self.assertEqual(len(files), 4)
         names = {f.name for f in files}
+        self.assertIn(".autocoder", names)
         self.assertIn("test-login.json", names)
         self.assertIn("test-api.py", names)
         self.assertIn("generate-data.py", names)
@@ -90,46 +98,72 @@ class TestGetAutocoderFiles(unittest.TestCase):
         self.assertEqual(len(files), 6)
 
     def test_detects_sql_test_files(self):
-        """Should detect test-*.sql files."""
-        (self.project_dir / "test-feature153-create-page.sql").touch()
-        (self.project_dir / "test-database-migration.sql").touch()
+        """Should detect test-*.sql files in Autocoder directories."""
+        (self.project_dir / "prompts").mkdir()
+        (self.project_dir / "prompts" / "test-feature153-create-page.sql").touch()
+        (self.project_dir / "prompts" / "test-database-migration.sql").touch()
         files = detach.get_autocoder_files(self.project_dir)
         names = {f.name for f in files}
+        self.assertIn("prompts", names)
         self.assertIn("test-feature153-create-page.sql", names)
         self.assertIn("test-database-migration.sql", names)
-        self.assertEqual(len(files), 2)
+        self.assertEqual(len(files), 3)  # 1 directory + 2 files
 
     def test_detects_php_test_files(self):
-        """Should detect test-*.php files."""
-        (self.project_dir / "test-feature28-create-page.php").touch()
-        (self.project_dir / "test-api-endpoint.php").touch()
+        """Should detect test-*.php files in Autocoder directories."""
+        (self.project_dir / ".autocoder").mkdir()
+        (self.project_dir / ".autocoder" / "test-feature28-create-page.php").touch()
+        (self.project_dir / ".autocoder" / "test-api-endpoint.php").touch()
         files = detach.get_autocoder_files(self.project_dir)
         names = {f.name for f in files}
+        self.assertIn(".autocoder", names)
         self.assertIn("test-feature28-create-page.php", names)
         self.assertIn("test-api-endpoint.php", names)
-        self.assertEqual(len(files), 2)
+        self.assertEqual(len(files), 3)  # 1 directory + 2 files
 
     def test_detects_test_helper_php_files(self):
-        """Should detect create-*-test*.php helper scripts."""
-        (self.project_dir / "create-xss-direct-test.php").touch()
-        (self.project_dir / "create-xss-test-page.php").touch()
-        (self.project_dir / "create-csrf-test.php").touch()
+        """Should detect create-*-test*.php helper scripts in Autocoder directories."""
+        (self.project_dir / ".playwright-mcp").mkdir()
+        (self.project_dir / ".playwright-mcp" / "create-xss-direct-test.php").touch()
+        (self.project_dir / ".playwright-mcp" / "create-xss-test-page.php").touch()
+        (self.project_dir / ".playwright-mcp" / "create-csrf-test.php").touch()
         files = detach.get_autocoder_files(self.project_dir)
         names = {f.name for f in files}
+        self.assertIn(".playwright-mcp", names)
         self.assertIn("create-xss-direct-test.php", names)
         self.assertIn("create-xss-test-page.php", names)
         self.assertIn("create-csrf-test.php", names)
-        self.assertEqual(len(files), 3)
+        self.assertEqual(len(files), 4)  # 1 directory + 3 files
 
     def test_detects_rollback_json_files(self):
-        """Should detect rollback-*.json files."""
-        (self.project_dir / "rollback-test-translated.json").touch()
-        (self.project_dir / "rollback-migration-v2.json").touch()
+        """Should detect rollback-*.json files in Autocoder directories."""
+        (self.project_dir / "prompts").mkdir()
+        (self.project_dir / "prompts" / "rollback-test-translated.json").touch()
+        (self.project_dir / "prompts" / "rollback-migration-v2.json").touch()
         files = detach.get_autocoder_files(self.project_dir)
         names = {f.name for f in files}
+        self.assertIn("prompts", names)
         self.assertIn("rollback-test-translated.json", names)
         self.assertIn("rollback-migration-v2.json", names)
-        self.assertEqual(len(files), 2)
+        self.assertEqual(len(files), 3)  # 1 directory + 2 files
+
+    def test_does_not_capture_user_files_at_root(self):
+        """Should NOT capture user files matching patterns if at project root.
+
+        This prevents accidentally moving user files like test-myfeature.py.
+        Patterns are only applied within Autocoder-owned directories.
+        """
+        # User files at project root - should NOT be captured
+        (self.project_dir / "test-myfeature.py").touch()
+        (self.project_dir / "test-user-data.json").touch()
+        (self.project_dir / "generate-report.py").touch()
+
+        files = detach.get_autocoder_files(self.project_dir)
+        self.assertEqual(len(files), 0)
+        names = {f.name for f in files}
+        self.assertNotIn("test-myfeature.py", names)
+        self.assertNotIn("test-user-data.json", names)
+        self.assertNotIn("generate-report.py", names)
 
     def test_excludes_artifacts_when_disabled(self):
         """Should exclude .playwright-mcp when include_artifacts=False."""

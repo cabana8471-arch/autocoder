@@ -194,11 +194,15 @@ def get_autocoder_files(project_dir: Path, include_artifacts: bool = True) -> li
         if file_path.exists():
             files.append(file_path)
 
-    # Check glob patterns
-    for pattern in AUTOCODER_PATTERNS:
-        for match in project_dir.glob(pattern):
-            if match.exists() and match not in files:
-                files.append(match)
+    # Check glob patterns ONLY in Autocoder-owned directories
+    # to avoid accidentally moving user files like test-myfeature.py
+    for dir_name in AUTOCODER_DIRECTORIES:
+        dir_path = project_dir / dir_name
+        if dir_path.exists() and dir_path.is_dir():
+            for pattern in AUTOCODER_PATTERNS:
+                for match in dir_path.rglob(pattern):
+                    if match.exists() and match not in files:
+                        files.append(match)
 
     return sorted(files, key=lambda p: p.name)
 
@@ -508,7 +512,10 @@ def restore_backup(project_dir: Path, verify_checksums: bool = False) -> tuple[b
             if src_path.is_symlink():
                 # Symlinks can be created atomically - remove existing first
                 if dest_path.exists() or dest_path.is_symlink():
-                    dest_path.unlink()
+                    if dest_path.is_dir() and not dest_path.is_symlink():
+                        shutil.rmtree(dest_path)
+                    else:
+                        dest_path.unlink()
                 link_target = os.readlink(src_path)
                 dest_path.symlink_to(link_target)
             elif src_path.is_dir():
