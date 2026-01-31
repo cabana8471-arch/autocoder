@@ -270,7 +270,7 @@ async def create_features_from_issues(request: CreateFeaturesRequest):
     Converts review issues into trackable features that can be assigned
     to coding agents for resolution.
     """
-    from api.database import Feature, get_session
+    from api.database import Feature, create_database
 
     project_dir = get_project_dir(request.project_name)
     db_path = project_dir / "features.db"
@@ -282,7 +282,8 @@ async def create_features_from_issues(request: CreateFeaturesRequest):
     session = None
 
     try:
-        session = get_session(db_path)
+        _, SessionLocal = create_database(project_dir)
+        session = SessionLocal()
 
         # Get max priority for ordering
         max_priority = session.query(Feature.priority).order_by(Feature.priority.desc()).first()

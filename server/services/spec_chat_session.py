@@ -14,7 +14,7 @@ import sys
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import AsyncGenerator, Optional
+from typing import Any, AsyncGenerator, Optional
 
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 from dotenv import load_dotenv
@@ -170,7 +170,11 @@ class SpecChatSession:
         system_cli = shutil.which("claude")
 
         # Build environment overrides for API configuration
-        sdk_env = {var: os.getenv(var) for var in API_ENV_VARS if os.getenv(var)}
+        # Filter out None values for type safety
+        sdk_env: dict[str, str] = {
+            var: val for var in API_ENV_VARS
+            if (val := os.getenv(var)) is not None
+        }
 
         # Determine model from environment or use default
         # This allows using alternative APIs (e.g., GLM via z.ai) that may not support Claude model names
@@ -300,14 +304,16 @@ class SpecChatSession:
 
             # Add image blocks
             for att in attachments:
-                content_blocks.append({
+                # Build the image block - using Any for nested dict structure
+                image_block: dict[str, Any] = {
                     "type": "image",
                     "source": {
                         "type": "base64",
                         "media_type": att.mimeType,
                         "data": att.base64Data,
                     }
-                })
+                }
+                content_blocks.append(image_block)
 
             # Send multimodal content to Claude using async generator format
             # The SDK's query() accepts AsyncIterable[dict] for custom message formats
@@ -320,7 +326,7 @@ class SpecChatSession:
         current_text = ""
 
         # Track pending writes for BOTH required files
-        pending_writes = {
+        pending_writes: dict[str, dict[str, Any] | None] = {
             "app_spec": None,      # {"tool_id": ..., "path": ...}
             "initializer": None,   # {"tool_id": ..., "path": ...}
         }
@@ -395,7 +401,8 @@ class SpecChatSession:
                             logger.warning(f"Tool error: {content}")
                             # Clear any pending writes that failed
                             for key in pending_writes:
-                                if pending_writes[key] and tool_use_id == pending_writes[key].get("tool_id"):
+                                pending_write = pending_writes[key]
+                                if pending_write is not None and tool_use_id == pending_write.get("tool_id"):
                                     logger.error(f"{key} write failed: {content}")
                                     pending_writes[key] = None
                         else:

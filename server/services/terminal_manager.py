@@ -736,7 +736,7 @@ async def cleanup_all_terminals() -> None:
     Called on server shutdown to ensure all PTY processes are terminated.
     """
     with _sessions_lock:
-        all_sessions = []
+        all_sessions: list[TerminalSession] = []
         for project_sessions in _sessions.values():
             all_sessions.extend(project_sessions.values())
 

@@ -18,7 +18,7 @@ import copy
 import json
 import logging
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any, TypedDict, cast
 
 logger = logging.getLogger(__name__)
 
@@ -240,8 +240,9 @@ def load_autocoder_config(project_dir: Path) -> AutocoderConfig:
             return copy.deepcopy(DEFAULT_CONFIG)
 
         # Merge user config with defaults
-        merged = _deep_merge(DEFAULT_CONFIG, user_config)
-        return merged
+        # Cast is safe because _deep_merge preserves structure when merging with DEFAULT_CONFIG
+        merged = _deep_merge(dict(DEFAULT_CONFIG), user_config)
+        return cast(AutocoderConfig, merged)
 
     except json.JSONDecodeError as e:
         logger.warning("Failed to parse config at %s: %s", config_path, e)
@@ -290,9 +291,11 @@ def update_autocoder_config(project_dir: Path, updates: dict[str, Any]) -> Autoc
         Updated configuration
     """
     config = load_autocoder_config(project_dir)
-    merged = _deep_merge(config, updates)
-    save_autocoder_config(project_dir, merged)
-    return merged
+    # Cast is safe because _deep_merge preserves structure when merging AutocoderConfig
+    merged = _deep_merge(dict(config), updates)
+    merged_config = cast(AutocoderConfig, merged)
+    save_autocoder_config(project_dir, merged_config)
+    return merged_config
 
 
 # =============================================================================

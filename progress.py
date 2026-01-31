@@ -267,7 +267,7 @@ def clear_stuck_features(project_dir: Path) -> int:
                 conn.commit()
                 print(f"[Auto-recovery] Cleared {count} stuck feature(s) from previous session")
 
-            return count
+            return int(count)
     except sqlite3.OperationalError:
         # Table doesn't exist or doesn't have in_progress column
         return 0

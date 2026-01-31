@@ -16,7 +16,7 @@ import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import AsyncGenerator, Optional
+from typing import Any, AsyncGenerator, Optional
 
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 from dotenv import load_dotenv
@@ -175,7 +175,11 @@ class ExpandChatSession:
         system_prompt = skill_content.replace("$ARGUMENTS", project_path)
 
         # Build environment overrides for API configuration
-        sdk_env = {var: os.getenv(var) for var in API_ENV_VARS if os.getenv(var)}
+        # Filter out None values for type safety
+        sdk_env: dict[str, str] = {
+            var: val for var in API_ENV_VARS
+            if (val := os.getenv(var)) is not None
+        }
 
         # Determine model from environment or use default
         # This allows using alternative APIs (e.g., GLM via z.ai) that may not support Claude model names
@@ -205,7 +209,7 @@ class ExpandChatSession:
                         "Glob",
                         *EXPAND_FEATURE_TOOLS,
                     ],
-                    mcp_servers=mcp_servers,
+                    mcp_servers=mcp_servers,  # type: ignore[arg-type]
                     permission_mode="bypassPermissions",
                     max_turns=100,
                     cwd=str(self.project_dir.resolve()),
@@ -303,14 +307,16 @@ class ExpandChatSession:
             if message:
                 content_blocks.append({"type": "text", "text": message})
             for att in attachments:
-                content_blocks.append({
+                # Build the image block - using Any for nested dict structure
+                image_block: dict[str, Any] = {
                     "type": "image",
                     "source": {
                         "type": "base64",
                         "media_type": att.mimeType,
                         "data": att.base64Data,
                     }
-                })
+                }
+                content_blocks.append(image_block)
             await self.client.query(_make_multimodal_message(content_blocks))
             logger.info(f"Sent multimodal message with {len(attachments)} image(s)")
         else:

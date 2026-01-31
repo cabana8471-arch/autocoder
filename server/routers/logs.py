@@ -14,7 +14,7 @@ Endpoints:
 import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal, Optional, cast
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -149,8 +149,14 @@ async def query_logs(
         if since_hours:
             since = datetime.now(timezone.utc) - timedelta(hours=since_hours)
 
+        # Cast level to the expected Literal type (or None)
+        level_literal = cast(
+            Literal["debug", "info", "warn", "warning", "error"] | None,
+            level
+        ) if level else None
+
         logs = query.query(
-            level=level,
+            level=level_literal,
             agent_id=agent_id,
             feature_id=feature_id,
             tool_name=tool_name,
@@ -160,7 +166,7 @@ async def query_logs(
             offset=offset,
         )
 
-        total = query.count(level=level, agent_id=agent_id, feature_id=feature_id, since=since)
+        total = query.count(level=level_literal, agent_id=agent_id, feature_id=feature_id, since=since)
 
         return LogQueryResponse(
             logs=[LogEntry(**log) for log in logs],

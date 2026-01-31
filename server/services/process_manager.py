@@ -352,17 +352,26 @@ class AgentProcessManager:
             # stdin=DEVNULL prevents blocking if Claude CLI or child process tries to read stdin
             # CREATE_NO_WINDOW on Windows prevents console window pop-ups
             # PYTHONUNBUFFERED ensures output isn't delayed
-            popen_kwargs = {
-                "stdin": subprocess.DEVNULL,
-                "stdout": subprocess.PIPE,
-                "stderr": subprocess.STDOUT,
-                "cwd": str(self.project_dir),
-                "env": {**os.environ, "PYTHONUNBUFFERED": "1"},
-            }
+            env: dict[str, str] = {**os.environ, "PYTHONUNBUFFERED": "1"}
             if sys.platform == "win32":
-                popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-
-            self.process = subprocess.Popen(cmd, **popen_kwargs)
+                self.process = subprocess.Popen(
+                    cmd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    cwd=str(self.project_dir),
+                    env=env,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+            else:
+                self.process = subprocess.Popen(
+                    cmd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    cwd=str(self.project_dir),
+                    env=env,
+                )
 
             # Atomic lock creation - if it fails, another process beat us
             if not self._create_lock():

@@ -29,6 +29,7 @@ from sqlalchemy import (
     event,
     text,
 )
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, relationship, sessionmaker
 from sqlalchemy.types import JSON
 
@@ -380,6 +381,14 @@ def create_database(project_dir: Path) -> tuple:
     Returns:
         Tuple of (engine, SessionLocal)
     """
+    cache_key = project_dir.as_posix()
+
+    # Return cached engine if available
+    if cache_key in _engine_cache:
+        engine = _engine_cache[cache_key]
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        return engine, SessionLocal
+
     db_url = get_database_url(project_dir)
 
     # Choose journal mode based on filesystem type
@@ -422,12 +431,37 @@ def create_database(project_dir: Path) -> tuple:
     # Migrate to add schedules tables
     _migrate_add_schedules_tables(engine)
 
+    # Cache the engine for dispose_engine functionality
+    _engine_cache[cache_key] = engine
+
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     return engine, SessionLocal
 
 
 # Global session maker - will be set when server starts
 _session_maker: Optional[sessionmaker] = None
+
+# Engine cache for dispose functionality
+_engine_cache: dict[str, Engine] = {}
+
+
+def dispose_engine(project_dir: Path) -> bool:
+    """Dispose of and remove the cached engine for a project.
+
+    This closes all database connections, releasing file locks on Windows.
+    Should be called before deleting the database file.
+
+    Returns:
+        True if an engine was disposed, False if no engine was cached.
+    """
+    cache_key = project_dir.as_posix()
+
+    if cache_key in _engine_cache:
+        engine = _engine_cache.pop(cache_key)
+        engine.dispose()
+        return True
+
+    return False
 
 
 def set_session_maker(session_maker: sessionmaker) -> None:

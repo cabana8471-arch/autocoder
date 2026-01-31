@@ -694,7 +694,8 @@ def feature_create_bulk(
                 if indices:
                     # Convert indices to actual feature IDs
                     dep_ids = [created_features[idx].id for idx in indices]
-                    created_features[i].dependencies = sorted(dep_ids)
+                    # SQLAlchemy JSON column accepts list directly
+                    created_features[i].dependencies = sorted(dep_ids)  # type: ignore[assignment]
                     deps_count += 1
 
             # Commit happens automatically on context manager exit

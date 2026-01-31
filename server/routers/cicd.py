@@ -12,7 +12,7 @@ Endpoints:
 
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional, cast
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -115,9 +115,11 @@ async def generate_workflows(request: GenerateRequest):
                 if wf_type not in ["ci", "security", "deploy"]:
                     continue
 
+                # Cast to Literal type for type checker
+                workflow_type_literal = cast(Literal["ci", "security", "deploy"], wf_type)
                 workflow = generate_github_workflow(
                     project_dir,
-                    workflow_type=wf_type,
+                    workflow_type=workflow_type_literal,
                     save=request.save,
                 )
 
@@ -172,9 +174,11 @@ async def preview_workflow(request: PreviewRequest):
     try:
         from integrations.ci import generate_github_workflow
 
+        # Cast to Literal type for type checker
+        workflow_type_literal = cast(Literal["ci", "security", "deploy"], request.workflow_type)
         workflow = generate_github_workflow(
             project_dir,
-            workflow_type=request.workflow_type,
+            workflow_type=workflow_type_literal,
             save=False,
         )
 

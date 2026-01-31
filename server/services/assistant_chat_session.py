@@ -208,7 +208,8 @@ class AssistantChatSession:
         # Create a new conversation if we don't have one
         if is_new_conversation:
             conv = create_conversation(self.project_dir, self.project_name)
-            self.conversation_id = conv.id
+            # SQLAlchemy Column[int] is actually int at runtime
+            self.conversation_id = conv.id  # type: ignore[assignment]
             yield {"type": "conversation_created", "conversation_id": self.conversation_id}
 
         # Build permissions list for assistant access (read + feature management)
@@ -261,7 +262,11 @@ class AssistantChatSession:
         system_cli = shutil.which("claude")
 
         # Build environment overrides for API configuration
-        sdk_env = {var: os.getenv(var) for var in API_ENV_VARS if os.getenv(var)}
+        # Filter out None values for type safety
+        sdk_env: dict[str, str] = {
+            var: val for var in API_ENV_VARS
+            if (val := os.getenv(var)) is not None
+        }
 
         # Determine model from environment or use default
         # This allows using alternative APIs (e.g., GLM via z.ai) that may not support Claude model names
@@ -277,7 +282,7 @@ class AssistantChatSession:
                     # This avoids Windows command line length limit (~8191 chars)
                     setting_sources=["project"],
                     allowed_tools=[*READONLY_BUILTIN_TOOLS, *ASSISTANT_FEATURE_TOOLS],
-                    mcp_servers=mcp_servers,
+                    mcp_servers=mcp_servers,  # type: ignore[arg-type]
                     permission_mode="bypassPermissions",
                     max_turns=100,
                     cwd=str(self.project_dir.resolve()),
@@ -303,6 +308,8 @@ class AssistantChatSession:
                 greeting = f"Hello! I'm your project assistant for **{self.project_name}**. I can help you understand the codebase, explain features, and answer questions about the project. What would you like to know?"
 
                 # Store the greeting in the database
+                # At this point conversation_id is guaranteed to be set
+                assert self.conversation_id is not None
                 add_message(self.project_dir, self.conversation_id, "assistant", greeting)
 
                 yield {"type": "text", "content": greeting}

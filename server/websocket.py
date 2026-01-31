@@ -96,8 +96,10 @@ class AgentTracker:
         # Coding agent start: "Started coding agent for feature #X"
         if line.startswith("Started coding agent for feature #"):
             try:
-                feature_id = int(re.search(r'#(\d+)', line).group(1))
-                return await self._handle_agent_start(feature_id, line, agent_type="coding")
+                match = re.search(r'#(\d+)', line)
+                if match:
+                    feature_id = int(match.group(1))
+                    return await self._handle_agent_start(feature_id, line, agent_type="coding")
             except (AttributeError, ValueError):
                 pass
 
@@ -117,9 +119,11 @@ class AgentTracker:
         # Coding agent complete: "Feature #X completed/failed" (without "testing" keyword)
         if line.startswith("Feature #") and ("completed" in line or "failed" in line) and "testing" not in line:
             try:
-                feature_id = int(re.search(r'#(\d+)', line).group(1))
-                is_success = "completed" in line
-                return await self._handle_agent_complete(feature_id, is_success, agent_type="coding")
+                match = re.search(r'#(\d+)', line)
+                if match:
+                    feature_id = int(match.group(1))
+                    is_success = "completed" in line
+                    return await self._handle_agent_complete(feature_id, is_success, agent_type="coding")
             except (AttributeError, ValueError):
                 pass
 
@@ -444,7 +448,7 @@ class OrchestratorTracker:
         timestamp = datetime.now().isoformat()
 
         # Add to recent events (keep last 5)
-        event = {
+        event: dict[str, str | int] = {
             'eventType': event_type,
             'message': message,
             'timestamp': timestamp,
@@ -652,7 +656,7 @@ async def project_websocket(websocket: WebSocket, project_name: str):
                 agent_index, _ = await agent_tracker.get_agent_info(feature_id)
 
             # Send the raw log line with optional feature/agent attribution
-            log_msg = {
+            log_msg: dict[str, str | int] = {
                 "type": "log",
                 "line": line,
                 "timestamp": datetime.now().isoformat(),

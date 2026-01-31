@@ -248,7 +248,7 @@ def main() -> None:
     except Exception as e:
         print(f"\nFatal error: {e}")
         if logger:
-            logger.error("Fatal error", error_type=type(e).__name__, message=str(e)[:200])
+            logger.error("Fatal error", error_type=type(e).__name__, error_message=str(e)[:200])
         raise
 
 

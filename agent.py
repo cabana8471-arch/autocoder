@@ -326,7 +326,7 @@ async def run_autonomous_agent(
                 status, response = await run_agent_session(client, prompt, project_dir, logger=logger)
         except Exception as e:
             print(f"Client/MCP server error: {e}")
-            logger.error("Client/MCP server error", error_type=type(e).__name__, message=str(e)[:200])
+            logger.error("Client/MCP server error", error_type=type(e).__name__, error_message=str(e)[:200])
             # Don't crash - return error status so the loop can retry
             status, response = "error", str(e)
 

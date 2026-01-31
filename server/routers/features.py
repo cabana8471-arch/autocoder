@@ -8,10 +8,12 @@ API endpoints for feature/test case management.
 import logging
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Literal, cast
 
 from fastapi import APIRouter, HTTPException
 
 from ..schemas import (
+    DependencyGraphEdge,
     DependencyGraphNode,
     DependencyGraphResponse,
     DependencyUpdate,
@@ -353,17 +355,22 @@ async def get_dependency_graph(project_name: str):
                 else:
                     status = "pending"
 
+                # Cast status to Literal type for type checker
+                status_literal = cast(
+                    Literal["pending", "in_progress", "done", "blocked"],
+                    status
+                )
                 nodes.append(DependencyGraphNode(
                     id=f.id,
                     name=f.name,
                     category=f.category,
-                    status=status,
+                    status=status_literal,
                     priority=f.priority,
                     dependencies=deps
                 ))
 
                 for dep_id in deps:
-                    edges.append({"source": dep_id, "target": f.id})
+                    edges.append(DependencyGraphEdge(source=dep_id, target=f.id))
 
             return DependencyGraphResponse(nodes=nodes, edges=edges)
     except HTTPException:

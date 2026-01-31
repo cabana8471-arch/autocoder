@@ -10,6 +10,7 @@ import re
 import shutil
 import sys
 from pathlib import Path
+from typing import Any, Callable
 
 from fastapi import APIRouter, HTTPException
 
@@ -28,11 +29,11 @@ from ..schemas import (
 
 # Lazy imports to avoid circular dependencies
 _imports_initialized = False
-_check_spec_exists = None
-_scaffold_project_prompts = None
-_get_project_prompts_dir = None
-_count_passing_tests = None
-_detach_module = None
+_check_spec_exists: Callable[[Path], bool] | None = None
+_scaffold_project_prompts: Callable[[Path], None] | None = None
+_get_project_prompts_dir: Callable[[Path], Path] | None = None
+_count_passing_tests: Callable[[Path], tuple[int, int, int]] | None = None
+_detach_module: Any = None  # Module type
 
 
 def _init_imports():
@@ -105,6 +106,7 @@ def validate_project_name(name: str) -> str:
 def get_project_stats(project_dir: Path) -> ProjectStats:
     """Get statistics for a project."""
     _init_imports()
+    assert _count_passing_tests is not None
     passing, in_progress, total = _count_passing_tests(project_dir)
     percentage = (passing / total * 100) if total > 0 else 0.0
     return ProjectStats(
@@ -133,6 +135,8 @@ async def list_projects():
         if not is_valid:
             continue
 
+        assert _check_spec_exists is not None
+        assert _detach_module is not None
         has_spec = _check_spec_exists(project_dir)
         stats = get_project_stats(project_dir)
         is_detached = _detach_module.is_project_detached(project_dir)
@@ -209,6 +213,7 @@ async def create_project(project: ProjectCreate):
             )
 
     # Scaffold prompts
+    assert _scaffold_project_prompts is not None
     _scaffold_project_prompts(project_path)
 
     # Register in registry
@@ -244,6 +249,8 @@ async def get_project(name: str):
     if not project_dir.exists():
         raise HTTPException(status_code=404, detail=f"Project directory no longer exists: {project_dir}")
 
+    assert _check_spec_exists is not None
+    assert _get_project_prompts_dir is not None
     has_spec = _check_spec_exists(project_dir)
     stats = get_project_stats(project_dir)
     prompts_dir = _get_project_prompts_dir(project_dir)
@@ -315,6 +322,7 @@ async def get_project_prompts(name: str):
     if not project_dir.exists():
         raise HTTPException(status_code=404, detail="Project directory not found")
 
+    assert _get_project_prompts_dir is not None
     prompts_dir = _get_project_prompts_dir(project_dir)
 
     def read_file(filename: str) -> str:
@@ -348,6 +356,7 @@ async def update_project_prompts(name: str, prompts: ProjectPromptsUpdate):
     if not project_dir.exists():
         raise HTTPException(status_code=404, detail="Project directory not found")
 
+    assert _get_project_prompts_dir is not None
     prompts_dir = _get_project_prompts_dir(project_dir)
     prompts_dir.mkdir(parents=True, exist_ok=True)
 
@@ -485,6 +494,8 @@ async def update_project_settings(name: str, settings: ProjectSettingsUpdate):
             raise HTTPException(status_code=500, detail="Failed to update concurrency")
 
     # Return updated project details
+    assert _check_spec_exists is not None
+    assert _get_project_prompts_dir is not None
     has_spec = _check_spec_exists(project_dir)
     stats = get_project_stats(project_dir)
     prompts_dir = _get_project_prompts_dir(project_dir)
@@ -518,6 +529,7 @@ def get_detach_status(name: str):
     if not project_dir.exists():
         raise HTTPException(status_code=404, detail="Project directory not found")
 
+    assert _detach_module is not None
     status = _detach_module.get_detach_status(name)
 
     return DetachStatusResponse(
@@ -555,6 +567,7 @@ def detach_project(name: str):
     # Note: Agent lock check is handled inside detach_project() to avoid TOCTOU race.
     # The detach module will return an appropriate error message if agent is running.
 
+    assert _detach_module is not None
     success, message, manifest = _detach_module.detach_project(
         name,
         force=False,
@@ -611,6 +624,7 @@ def reattach_project(name: str):
             detail="Cannot reattach while agent is running. Stop the agent first."
         )
 
+    assert _detach_module is not None
     success, message, files_restored = _detach_module.reattach_project(name)
 
     if not success:

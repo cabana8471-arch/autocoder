@@ -630,7 +630,7 @@ def create_client(
             setting_sources=["project"],  # Enable skills, commands, and CLAUDE.md from project dir
             max_buffer_size=10 * 1024 * 1024,  # 10MB for large Playwright screenshots
             allowed_tools=allowed_tools,
-            mcp_servers=mcp_servers,
+            mcp_servers=mcp_servers,  # type: ignore[arg-type]
             hooks={
                 "PreToolUse": [
                     HookMatcher(matcher="Bash", hooks=[bash_hook_with_context]),

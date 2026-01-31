@@ -560,7 +560,8 @@ module.exports = {config_json}
         self.generate_css(tokens, css_path)
         self.generate_scss(tokens, scss_path)
 
-        results = {
+        # Results dict can contain string paths or list of contrast issues
+        results: dict[str, str | list[str]] = {
             "css": str(css_path),
             "scss": str(scss_path),
         }
@@ -576,7 +577,7 @@ module.exports = {config_json}
         # Validate and report
         issues = self.validate_contrast(tokens)
         if issues:
-            results["contrast_issues"] = issues
+            results["contrast_issues"] = [str(i) for i in issues]
 
         return results
 

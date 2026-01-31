@@ -176,12 +176,12 @@ async def list_docs(project_name: str):
     # Check docs directory
     docs_dir = project_dir / "docs"
     if docs_dir.exists():
-        for md_file in docs_dir.glob("*.md"):
-            stat = md_file.stat()
+        for doc_file_path in docs_dir.glob("*.md"):
+            stat = doc_file_path.stat()
             files.append(
                 DocFile(
-                    filename=md_file.name,
-                    path=str(md_file.relative_to(project_dir)),
+                    filename=doc_file_path.name,
+                    path=str(doc_file_path.relative_to(project_dir)),
                     size=stat.st_size,
                     modified=stat.st_mtime.__str__(),
                 )
