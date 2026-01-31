@@ -4,7 +4,7 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import * as api from '../lib/api'
-import type { FeatureCreate, FeatureUpdate, ModelsResponse, ProjectSettingsUpdate, Settings, SettingsUpdate } from '../lib/types'
+import type { FeatureCreate, FeatureUpdate, ModelsResponse, ProjectSettingsUpdate, ProjectSummary, Settings, SettingsUpdate } from '../lib/types'
 
 // ============================================================================
 // Projects
@@ -81,14 +81,25 @@ export function useDetachProject() {
   return useMutation({
     mutationFn: (name: string) => api.detachProject(name),
     onSuccess: (_data, name) => {
+      // Optimistically set is_detached=true in projects cache to prevent race condition
+      // This ensures isDetached becomes true immediately before the refetch completes
+      queryClient.setQueryData(['projects'], (oldData: ProjectSummary[] | undefined) => {
+        if (!oldData) return oldData
+        return oldData.map(p => p.name === name ? { ...p, is_detached: true } : p)
+      })
+
       // Clear features data immediately (prevents stale cache)
       queryClient.setQueryData(['features', name], null)
       queryClient.setQueryData(['dependencyGraph', name], null)
+      queryClient.setQueryData(['schedules', name], null)
+      queryClient.setQueryData(['nextRun', name], null)
 
       // Invalidate to refresh
       queryClient.invalidateQueries({ queryKey: ['projects'] })
       queryClient.invalidateQueries({ queryKey: ['project', name] })
       queryClient.invalidateQueries({ queryKey: ['features', name] })
+      queryClient.invalidateQueries({ queryKey: ['schedules', name] })
+      queryClient.invalidateQueries({ queryKey: ['nextRun', name] })
     },
   })
 }
@@ -99,9 +110,18 @@ export function useReattachProject() {
   return useMutation({
     mutationFn: (name: string) => api.reattachProject(name),
     onSuccess: (_data, name) => {
+      // Optimistically set is_detached=false in projects cache
+      queryClient.setQueryData(['projects'], (oldData: ProjectSummary[] | undefined) => {
+        if (!oldData) return oldData
+        return oldData.map(p => p.name === name ? { ...p, is_detached: false } : p)
+      })
+
+      // Invalidate to refresh all data
       queryClient.invalidateQueries({ queryKey: ['projects'] })
       queryClient.invalidateQueries({ queryKey: ['project', name] })
       queryClient.invalidateQueries({ queryKey: ['features', name] })
+      queryClient.invalidateQueries({ queryKey: ['schedules', name] })
+      queryClient.invalidateQueries({ queryKey: ['nextRun', name] })
     },
   })
 }
