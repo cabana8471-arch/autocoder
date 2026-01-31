@@ -432,9 +432,15 @@ def handle_project_detach_action(project_name: str, project_path: Path) -> None:
             return
         if confirm == 'y':
             print("\nReattaching...")
-            success, message, _ = detach_module.reattach_project(project_name)
+            success, message, _, conflicts = detach_module.reattach_project(project_name)
             if success:
                 print(f"  ✓ {message}")
+                if conflicts:
+                    print(f"  ⚠ {len(conflicts)} user files backed up to .pre-reattach-backup/")
+                    for f in conflicts[:5]:  # Show first 5
+                        print(f"      - {f}")
+                    if len(conflicts) > 5:
+                        print(f"      ... and {len(conflicts) - 5} more")
             else:
                 print(f"  ✗ {message}")
     else:
@@ -448,9 +454,11 @@ def handle_project_detach_action(project_name: str, project_path: Path) -> None:
             return
         if confirm == 'y':
             print("\nDetaching...")
-            success, message, manifest = detach_module.detach_project(project_name)
+            success, message, manifest, user_files_restored = detach_module.detach_project(project_name)
             if success:
                 print(f"  ✓ {message}")
+                if user_files_restored > 0:
+                    print(f"  ✓ Restored {user_files_restored} user files from previous session")
             else:
                 print(f"  ✗ {message}")
 

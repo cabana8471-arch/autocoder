@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 # Backup directory name
 BACKUP_DIR = ".autocoder-backup"
+PRE_REATTACH_BACKUP_DIR = ".pre-reattach-backup"
 MANIFEST_FILE = "manifest.json"
 DETACH_LOCK = ".autocoder-detach.lock"
 
@@ -419,18 +420,19 @@ def create_backup(
     return manifest
 
 
-def restore_backup(project_dir: Path, verify_checksums: bool = False) -> tuple[bool, int]:
+def restore_backup(project_dir: Path, verify_checksums: bool = False) -> tuple[bool, int, list[str]]:
     """
     Restore files from backup.
 
     Uses copy-then-delete approach to prevent data loss on partial failures.
+    Detects and backs up conflicting user files before restore.
 
     Args:
         project_dir: Path to project directory
         verify_checksums: If True, verify file checksums after restore
 
     Returns:
-        Tuple of (success, files_restored)
+        Tuple of (success, files_restored, conflicts_backed_up)
     """
     backup_dir = project_dir / BACKUP_DIR
     manifest_path = backup_dir / MANIFEST_FILE
@@ -438,7 +440,7 @@ def restore_backup(project_dir: Path, verify_checksums: bool = False) -> tuple[b
 
     if not manifest_path.exists():
         logger.error("No backup manifest found")
-        return False, 0
+        return False, 0, []
 
     # Read manifest
     try:
@@ -446,13 +448,13 @@ def restore_backup(project_dir: Path, verify_checksums: bool = False) -> tuple[b
             manifest: Manifest = json.load(f)
     except (json.JSONDecodeError, OSError) as e:
         logger.error("Failed to read manifest: %s", e)
-        return False, 0
+        return False, 0, []
 
     # Validate manifest structure
     required_keys = {"version", "files", "detached_at"}
     if not required_keys.issubset(manifest.keys()):
         logger.error("Invalid manifest structure: missing required keys")
-        return False, 0
+        return False, 0, []
 
     # Check manifest version compatibility
     manifest_version = manifest.get("version", 1)
@@ -461,7 +463,13 @@ def restore_backup(project_dir: Path, verify_checksums: bool = False) -> tuple[b
             "Manifest version %d not supported (max: %d)",
             manifest_version, MANIFEST_VERSION
         )
-        return False, 0
+        return False, 0, []
+
+    # Detect and backup user files that would be overwritten
+    conflicts = detect_conflicts(project_dir, manifest)
+    if conflicts:
+        backup_conflicts(project_dir, conflicts)
+        logger.info("Backed up %d user files to %s", len(conflicts), PRE_REATTACH_BACKUP_DIR)
 
     # Restore files
     files_restored = 0
@@ -478,7 +486,7 @@ def restore_backup(project_dir: Path, verify_checksums: bool = False) -> tuple[b
             dest_resolved.relative_to(project_dir_resolved)
         except ValueError:
             logger.error("Path traversal detected: %s", entry["path"])
-            return False, 0
+            return False, 0, []
 
         if not src_path.exists():
             logger.warning("Backup file missing: %s", entry["path"])
@@ -544,7 +552,7 @@ def restore_backup(project_dir: Path, verify_checksums: bool = False) -> tuple[b
                         temp_path.unlink()
                 except OSError:
                     pass
-            return False, files_restored
+            return False, files_restored, conflicts
 
         # Verify checksum if requested and available
         entry_checksum = entry.get("checksum")
@@ -554,7 +562,7 @@ def restore_backup(project_dir: Path, verify_checksums: bool = False) -> tuple[b
                     "Checksum mismatch for %s: expected %s",
                     entry["path"], entry["checksum"]
                 )
-                return False, files_restored
+                return False, files_restored, conflicts
 
         if entry["type"] == "directory":
             files_restored += entry.get("file_count") or 0
@@ -577,27 +585,130 @@ def restore_backup(project_dir: Path, verify_checksums: bool = False) -> tuple[b
             restored_count, expected_count
         )
 
-    return True, files_restored
+    return True, files_restored, conflicts
 
 
 def update_gitignore(project_dir: Path) -> None:
-    """Add .autocoder-backup/ to .gitignore if not already present."""
+    """Add backup directories to .gitignore if not already present."""
     gitignore_path = project_dir / ".gitignore"
-    backup_pattern = f"{BACKUP_DIR}/"
-    backup_entry = f"\n# Autocoder backup (for reattach)\n{backup_pattern}\n"
+
+    patterns = [
+        (f"{BACKUP_DIR}/", "Autocoder backup (for reattach)"),
+        (f"{PRE_REATTACH_BACKUP_DIR}/", "User files backup (for detach)"),
+    ]
 
     if gitignore_path.exists():
         content = gitignore_path.read_text(encoding="utf-8")
-        # Use line-based matching to avoid false positives from comments/paths
         lines = content.splitlines()
-        if not any(line.strip() == backup_pattern for line in lines):
-            with open(gitignore_path, "a", encoding="utf-8") as f:
-                f.write(backup_entry)
-            logger.info("Added %s to .gitignore", BACKUP_DIR)
+
+        for pattern, comment in patterns:
+            if not any(line.strip() == pattern for line in lines):
+                with open(gitignore_path, "a", encoding="utf-8") as f:
+                    f.write(f"\n# {comment}\n{pattern}\n")
+                logger.info("Added %s to .gitignore", pattern)
     else:
-        # Create new .gitignore
-        gitignore_path.write_text(backup_entry.lstrip(), encoding="utf-8")
-        logger.info("Created .gitignore with %s entry", BACKUP_DIR)
+        entries = "\n".join(f"# {comment}\n{pattern}" for pattern, comment in patterns)
+        gitignore_path.write_text(entries + "\n", encoding="utf-8")
+        logger.info("Created .gitignore with backup entries")
+
+
+def detect_conflicts(project_dir: Path, manifest: Manifest) -> list[str]:
+    """Return list of relative paths that exist in both backup and project.
+
+    These are files the user created/modified after detaching that would
+    be overwritten by restoring autocoder files.
+
+    Args:
+        project_dir: Path to the project directory
+        manifest: The backup manifest containing file entries
+
+    Returns:
+        List of relative path strings for conflicting files
+    """
+    conflicts = []
+    for entry in manifest["files"]:
+        dest = project_dir / entry["path"]
+        if dest.exists():
+            conflicts.append(entry["path"])
+    return conflicts
+
+
+def backup_conflicts(project_dir: Path, conflicts: list[str]) -> Path:
+    """Backup conflicting user files to .pre-reattach-backup/ before restore.
+
+    If backup dir already exists, merges new conflicts (doesn't overwrite).
+
+    Args:
+        project_dir: Path to the project directory
+        conflicts: List of relative paths to backup
+
+    Returns:
+        Path to the backup directory
+    """
+    backup_dir = project_dir / PRE_REATTACH_BACKUP_DIR
+    backup_dir.mkdir(parents=True, exist_ok=True)
+
+    for rel_path in conflicts:
+        src = project_dir / rel_path
+        dest = backup_dir / rel_path
+
+        # Don't overwrite existing backups (merge mode)
+        if dest.exists():
+            logger.debug("Skipping existing backup: %s", rel_path)
+            continue
+
+        dest.parent.mkdir(parents=True, exist_ok=True)
+
+        if src.is_dir():
+            shutil.copytree(src, dest, symlinks=True)
+        else:
+            shutil.copy2(src, dest)
+
+        logger.debug("Backed up user file: %s", rel_path)
+
+    return backup_dir
+
+
+def restore_pre_reattach_backup(project_dir: Path) -> int:
+    """Restore user files from .pre-reattach-backup/ after detaching.
+
+    Includes path traversal protection.
+
+    Args:
+        project_dir: Path to the project directory
+
+    Returns:
+        Number of files restored
+    """
+    backup_dir = project_dir / PRE_REATTACH_BACKUP_DIR
+    if not backup_dir.exists():
+        return 0
+
+    project_dir_resolved = project_dir.resolve()
+    files_restored = 0
+
+    for item in backup_dir.rglob("*"):
+        if item.is_file():
+            rel_path = item.relative_to(backup_dir)
+            dest = project_dir / rel_path
+
+            # SECURITY: Path traversal protection
+            try:
+                dest.resolve().relative_to(project_dir_resolved)
+            except ValueError:
+                logger.error("Path traversal detected in pre-reattach backup: %s", rel_path)
+                continue  # Skip malicious path
+
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(item, dest)
+            files_restored += 1
+            logger.debug("Restored user file: %s", rel_path)
+
+    # Clean up backup directory after successful restore
+    shutil.rmtree(backup_dir)
+    logger.info("Removed %s after restoring %d files", PRE_REATTACH_BACKUP_DIR, files_restored)
+
+    return files_restored
 
 
 def detach_project(
@@ -605,7 +716,7 @@ def detach_project(
     force: bool = False,
     include_artifacts: bool = True,
     dry_run: bool = False
-) -> tuple[bool, str, Manifest | None]:
+) -> tuple[bool, str, Manifest | None, int]:
     """
     Detach a project by moving Autocoder files to backup.
 
@@ -616,7 +727,7 @@ def detach_project(
         dry_run: Only simulate, don't actually move files
 
     Returns:
-        Tuple of (success, message, manifest)
+        Tuple of (success, message, manifest, user_files_restored)
     """
     # Resolve project path
     project_dir = get_project_path(name_or_path)
@@ -624,29 +735,29 @@ def detach_project(
         # Try as path
         project_dir = Path(name_or_path)
         if not project_dir.exists():
-            return False, f"Project '{name_or_path}' not found in registry and path doesn't exist", None
+            return False, f"Project '{name_or_path}' not found in registry and path doesn't exist", None, 0
 
     project_dir = Path(project_dir).resolve()
     project_name = name_or_path
 
     # Check if already detached
     if is_project_detached(project_dir):
-        return False, "Project is already detached. Use --reattach to restore.", None
+        return False, "Project is already detached. Use --reattach to restore.", None, 0
 
     # Check for agent lock
     agent_lock = project_dir / ".agent.lock"
     if agent_lock.exists() and not force:
-        return False, "Agent is currently running. Stop the agent first or use --force.", None
+        return False, "Agent is currently running. Stop the agent first or use --force.", None, 0
 
     # Acquire detach lock
     if not dry_run and not acquire_detach_lock(project_dir):
-        return False, "Another detach operation is in progress.", None
+        return False, "Another detach operation is in progress.", None, 0
 
     try:
         # Get files to move
         files = get_autocoder_files(project_dir, include_artifacts)
         if not files:
-            return False, "No Autocoder files found in project.", None
+            return False, "No Autocoder files found in project.", None, 0
 
         # Create backup
         manifest = create_backup(project_dir, project_name, files, dry_run)
@@ -655,17 +766,24 @@ def detach_project(
         if not dry_run:
             update_gitignore(project_dir)
 
+        # Restore user files from pre-reattach backup if exists
+        user_files_restored = 0
+        if not dry_run:
+            user_files_restored = restore_pre_reattach_backup(project_dir)
+
         action = "Would move" if dry_run else "Moved"
         message = f"{action} {manifest['file_count']} files ({manifest['total_size_bytes'] / 1024 / 1024:.1f} MB) to backup"
+        if user_files_restored > 0:
+            message += f", restored {user_files_restored} user files"
 
-        return True, message, manifest
+        return True, message, manifest, user_files_restored
 
     finally:
         if not dry_run:
             release_detach_lock(project_dir)
 
 
-def reattach_project(name_or_path: str) -> tuple[bool, str, int]:
+def reattach_project(name_or_path: str) -> tuple[bool, str, int, list[str]]:
     """
     Reattach a project by restoring Autocoder files from backup.
 
@@ -673,36 +791,38 @@ def reattach_project(name_or_path: str) -> tuple[bool, str, int]:
         name_or_path: Project name (from registry) or absolute path
 
     Returns:
-        Tuple of (success, message, files_restored)
+        Tuple of (success, message, files_restored, conflicts_backed_up)
     """
     # Resolve project path
     project_dir = get_project_path(name_or_path)
     if project_dir is None:
         project_dir = Path(name_or_path)
         if not project_dir.exists():
-            return False, f"Project '{name_or_path}' not found in registry and path doesn't exist", 0
+            return False, f"Project '{name_or_path}' not found in registry and path doesn't exist", 0, []
 
     project_dir = Path(project_dir).resolve()
 
     # Check for agent lock - don't reattach while agent is running
     agent_lock = project_dir / ".agent.lock"
     if agent_lock.exists():
-        return False, "Agent is currently running. Stop the agent first.", 0
+        return False, "Agent is currently running. Stop the agent first.", 0, []
 
     # Check if backup exists
     if not has_backup(project_dir):
-        return False, "No backup found. Project is not detached.", 0
+        return False, "No backup found. Project is not detached.", 0, []
 
     # Acquire detach lock
     if not acquire_detach_lock(project_dir):
-        return False, "Another detach operation is in progress.", 0
+        return False, "Another detach operation is in progress.", 0, []
 
     try:
-        success, files_restored = restore_backup(project_dir)
+        success, files_restored, conflicts = restore_backup(project_dir)
         if success:
-            return True, f"Restored {files_restored} files from backup", files_restored
+            if conflicts:
+                return True, f"Restored {files_restored} files. {len(conflicts)} user files saved to {PRE_REATTACH_BACKUP_DIR}/", files_restored, conflicts
+            return True, f"Restored {files_restored} files from backup", files_restored, []
         else:
-            return False, "Failed to restore backup", 0
+            return False, "Failed to restore backup", 0, []
     finally:
         release_detach_lock(project_dir)
 
@@ -887,8 +1007,14 @@ Examples:
         # Handle --reattach
         if args.reattach:
             print(f"\nReattaching project: {args.project}")
-            success, message, files_restored = reattach_project(args.project)
+            success, message, files_restored, conflicts = reattach_project(args.project)
             print(f"  {message}")
+            if conflicts:
+                print(f"  ⚠ {len(conflicts)} user files backed up to {PRE_REATTACH_BACKUP_DIR}/")
+                for f in conflicts[:5]:
+                    print(f"      - {f}")
+                if len(conflicts) > 5:
+                    print(f"      ... and {len(conflicts) - 5} more")
             return 0 if success else 1
 
         # Handle detach (default)
@@ -897,7 +1023,7 @@ Examples:
         else:
             print(f"\nDetaching project: {args.project}")
 
-        success, message, manifest = detach_project(
+        success, message, manifest, user_files_restored = detach_project(
             args.project,
             force=args.force,
             include_artifacts=args.include_artifacts,
@@ -905,6 +1031,8 @@ Examples:
         )
 
         print(f"  {message}")
+        if user_files_restored > 0:
+            print(f"  ✓ Restored {user_files_restored} user files from previous session")
 
         if manifest and args.dry_run:
             print("\n  Files to be moved:")

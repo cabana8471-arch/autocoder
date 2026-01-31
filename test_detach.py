@@ -279,10 +279,11 @@ class TestBackupRestore(unittest.TestCase):
 
     def test_restores_files_from_backup(self):
         """Should restore all files from backup."""
-        success, files_restored = detach.restore_backup(self.project_dir)
+        success, files_restored, conflicts = detach.restore_backup(self.project_dir)
 
         self.assertTrue(success)
         self.assertEqual(files_restored, 3)  # .autocoder, prompts, features.db
+        self.assertEqual(conflicts, [])  # No conflicts expected
 
         # Files should be restored
         self.assertTrue((self.project_dir / ".autocoder").exists())
@@ -311,9 +312,10 @@ class TestBackupRestore(unittest.TestCase):
         # Remove backup
         shutil.rmtree(self.project_dir / detach.BACKUP_DIR)
 
-        success, files_restored = detach.restore_backup(self.project_dir)
+        success, files_restored, conflicts = detach.restore_backup(self.project_dir)
         self.assertFalse(success)
         self.assertEqual(files_restored, 0)
+        self.assertEqual(conflicts, [])
 
 
 class TestDetachStatus(unittest.TestCase):
@@ -396,21 +398,23 @@ class TestDetachProject(unittest.TestCase):
         """Should detach project by path."""
         mock_get_path.return_value = None
 
-        success, message, manifest = detach.detach_project(str(self.project_dir))
+        success, message, manifest, user_files_restored = detach.detach_project(str(self.project_dir))
 
         self.assertTrue(success)
         self.assertIn("files", message)
         self.assertIsNotNone(manifest)
+        self.assertEqual(user_files_restored, 0)
 
     @patch('detach.get_project_path')
     def test_detach_by_name(self, mock_get_path):
         """Should detach project by registry name."""
         mock_get_path.return_value = self.project_dir
 
-        success, message, manifest = detach.detach_project("test-project")
+        success, message, manifest, user_files_restored = detach.detach_project("test-project")
 
         self.assertTrue(success)
         self.assertIsNotNone(manifest)
+        self.assertEqual(user_files_restored, 0)
 
     @patch('detach.get_project_path')
     def test_fails_if_already_detached(self, mock_get_path):
@@ -422,10 +426,11 @@ class TestDetachProject(unittest.TestCase):
         backup_dir.mkdir()
         (backup_dir / detach.MANIFEST_FILE).write_text("{}")
 
-        success, message, manifest = detach.detach_project("test-project")
+        success, message, manifest, user_files_restored = detach.detach_project("test-project")
 
         self.assertFalse(success)
         self.assertIn("already detached", message)
+        self.assertEqual(user_files_restored, 0)
 
     @patch('detach.get_project_path')
     def test_fails_if_agent_running(self, mock_get_path):
@@ -435,10 +440,11 @@ class TestDetachProject(unittest.TestCase):
         # Create agent lock
         (self.project_dir / ".agent.lock").touch()
 
-        success, message, manifest = detach.detach_project("test-project")
+        success, message, manifest, user_files_restored = detach.detach_project("test-project")
 
         self.assertFalse(success)
         self.assertIn("Agent is currently running", message)
+        self.assertEqual(user_files_restored, 0)
 
     @patch('detach.get_project_path')
     def test_force_bypasses_agent_check(self, mock_get_path):
@@ -448,9 +454,10 @@ class TestDetachProject(unittest.TestCase):
         # Create agent lock
         (self.project_dir / ".agent.lock").touch()
 
-        success, message, manifest = detach.detach_project("test-project", force=True)
+        success, message, manifest, user_files_restored = detach.detach_project("test-project", force=True)
 
         self.assertTrue(success)
+        self.assertEqual(user_files_restored, 0)
 
     @patch('detach.get_project_path')
     def test_fails_if_no_autocoder_files(self, mock_get_path):
@@ -462,10 +469,11 @@ class TestDetachProject(unittest.TestCase):
 
         mock_get_path.return_value = self.project_dir
 
-        success, message, manifest = detach.detach_project("test-project")
+        success, message, manifest, user_files_restored = detach.detach_project("test-project")
 
         self.assertFalse(success)
         self.assertIn("No Autocoder files found", message)
+        self.assertEqual(user_files_restored, 0)
 
 
 class TestReattachProject(unittest.TestCase):
@@ -492,10 +500,11 @@ class TestReattachProject(unittest.TestCase):
         """Should restore files from backup."""
         mock_get_path.return_value = self.project_dir
 
-        success, message, files_restored = detach.reattach_project("test-project")
+        success, message, files_restored, conflicts = detach.reattach_project("test-project")
 
         self.assertTrue(success)
         self.assertGreater(files_restored, 0)
+        self.assertEqual(conflicts, [])
         self.assertTrue((self.project_dir / ".autocoder").exists())
         self.assertTrue((self.project_dir / "features.db").exists())
 
@@ -507,10 +516,11 @@ class TestReattachProject(unittest.TestCase):
         # Remove backup
         shutil.rmtree(self.project_dir / detach.BACKUP_DIR)
 
-        success, message, files_restored = detach.reattach_project("test-project")
+        success, message, files_restored, conflicts = detach.reattach_project("test-project")
 
         self.assertFalse(success)
         self.assertIn("No backup found", message)
+        self.assertEqual(conflicts, [])
 
     @patch('detach.get_project_path')
     def test_reattach_fails_when_agent_running(self, mock_get_path):
@@ -520,11 +530,12 @@ class TestReattachProject(unittest.TestCase):
         # Create agent lock file
         (self.project_dir / ".agent.lock").touch()
 
-        success, message, files_restored = detach.reattach_project("test-project")
+        success, message, files_restored, conflicts = detach.reattach_project("test-project")
 
         self.assertFalse(success)
         self.assertIn("Agent is currently running", message)
         self.assertEqual(files_restored, 0)
+        self.assertEqual(conflicts, [])
 
 
 class TestGitignoreUpdate(unittest.TestCase):
@@ -675,7 +686,7 @@ class TestSecurityPathTraversal(unittest.TestCase):
         # Note: We don't need to create the actual malicious file - the validation
         # catches it during path resolution before attempting to access the source file
 
-        success, _ = detach.restore_backup(self.project_dir)
+        success, _, _ = detach.restore_backup(self.project_dir)
         self.assertFalse(success)
 
     def test_restore_blocks_absolute_path(self):
@@ -701,7 +712,7 @@ class TestSecurityPathTraversal(unittest.TestCase):
         }
         (backup_dir / detach.MANIFEST_FILE).write_text(json.dumps(manifest))
 
-        success, _ = detach.restore_backup(self.project_dir)
+        success, _, _ = detach.restore_backup(self.project_dir)
         self.assertFalse(success)
 
     def test_restore_rejects_unsupported_manifest_version(self):
@@ -717,7 +728,7 @@ class TestSecurityPathTraversal(unittest.TestCase):
         }
         (backup_dir / detach.MANIFEST_FILE).write_text(json.dumps(manifest))
 
-        success, _ = detach.restore_backup(self.project_dir)
+        success, _, _ = detach.restore_backup(self.project_dir)
         self.assertFalse(success)
 
     def test_restore_rejects_invalid_manifest_structure(self):
@@ -731,7 +742,7 @@ class TestSecurityPathTraversal(unittest.TestCase):
         }
         (backup_dir / detach.MANIFEST_FILE).write_text(json.dumps(manifest))
 
-        success, _ = detach.restore_backup(self.project_dir)
+        success, _, _ = detach.restore_backup(self.project_dir)
         self.assertFalse(success)
 
 
@@ -823,6 +834,320 @@ class TestBackupAtomicity(unittest.TestCase):
 
         # Backup directory should be cleaned up
         self.assertFalse((self.project_dir / detach.BACKUP_DIR).exists())
+
+
+class TestFileConflictDetection(unittest.TestCase):
+    """Tests for file conflict detection and backup during reattach."""
+
+    def setUp(self):
+        """Create temporary project directory."""
+        self.temp_dir = tempfile.mkdtemp()
+        self.project_dir = Path(self.temp_dir)
+
+    def tearDown(self):
+        """Clean up temporary directory."""
+        shutil.rmtree(self.temp_dir)
+
+    def test_detect_conflicts_no_conflicts(self):
+        """Should return empty list when no conflicts exist."""
+        manifest: detach.Manifest = {
+            "version": 1,
+            "detached_at": "2024-01-01T00:00:00Z",
+            "project_name": "test",
+            "autocoder_version": "1.0.0",
+            "files": [
+                {"path": "CLAUDE.md", "type": "file", "size": 100, "checksum": None, "file_count": None}
+            ],
+            "total_size_bytes": 100,
+            "file_count": 1,
+        }
+        conflicts = detach.detect_conflicts(self.project_dir, manifest)
+        self.assertEqual(conflicts, [])
+
+    def test_detect_conflicts_with_file(self):
+        """Should detect conflicting file."""
+        (self.project_dir / "CLAUDE.md").write_text("User content")
+
+        manifest: detach.Manifest = {
+            "version": 1,
+            "detached_at": "2024-01-01T00:00:00Z",
+            "project_name": "test",
+            "autocoder_version": "1.0.0",
+            "files": [
+                {"path": "CLAUDE.md", "type": "file", "size": 100, "checksum": None, "file_count": None}
+            ],
+            "total_size_bytes": 100,
+            "file_count": 1,
+        }
+        conflicts = detach.detect_conflicts(self.project_dir, manifest)
+        self.assertEqual(conflicts, ["CLAUDE.md"])
+
+    def test_detect_conflicts_with_directory(self):
+        """Should detect conflicting directory."""
+        (self.project_dir / "prompts").mkdir()
+        (self.project_dir / "prompts" / "user_file.txt").write_text("User file")
+
+        manifest: detach.Manifest = {
+            "version": 1,
+            "detached_at": "2024-01-01T00:00:00Z",
+            "project_name": "test",
+            "autocoder_version": "1.0.0",
+            "files": [
+                {"path": "prompts", "type": "directory", "size": 100, "checksum": None, "file_count": 1}
+            ],
+            "total_size_bytes": 100,
+            "file_count": 1,
+        }
+        conflicts = detach.detect_conflicts(self.project_dir, manifest)
+        self.assertEqual(conflicts, ["prompts"])
+
+    def test_backup_conflicts_creates_backup(self):
+        """Should backup conflicting files to pre-reattach-backup dir."""
+        (self.project_dir / "CLAUDE.md").write_text("User content")
+        conflicts = ["CLAUDE.md"]
+
+        backup_path = detach.backup_conflicts(self.project_dir, conflicts)
+
+        self.assertEqual(backup_path, self.project_dir / detach.PRE_REATTACH_BACKUP_DIR)
+        self.assertTrue((backup_path / "CLAUDE.md").exists())
+        self.assertEqual((backup_path / "CLAUDE.md").read_text(), "User content")
+
+    @patch('detach.get_project_path')
+    def test_reattach_with_conflicts_preserves_new_files(self, mock_get_path):
+        """Should backup user files when they conflict with autocoder files."""
+        mock_get_path.return_value = self.project_dir
+
+        # Create Autocoder files and backup them
+        (self.project_dir / "CLAUDE.md").write_text("Autocoder content")
+        (self.project_dir / "features.db").write_bytes(b"test")
+        files = detach.get_autocoder_files(self.project_dir)
+        detach.create_backup(self.project_dir, "test-project", files)
+
+        # Simulate user creating CLAUDE.md while detached
+        (self.project_dir / "CLAUDE.md").write_text("User content after /init")
+
+        # Reattach
+        success, message, files_restored, conflicts = detach.reattach_project("test-project")
+
+        self.assertTrue(success)
+        self.assertEqual(conflicts, ["CLAUDE.md"])
+        self.assertIn("user files saved", message)
+
+        # Autocoder content restored
+        self.assertEqual((self.project_dir / "CLAUDE.md").read_text(), "Autocoder content")
+
+        # User content backed up
+        backup_path = self.project_dir / detach.PRE_REATTACH_BACKUP_DIR
+        self.assertTrue(backup_path.exists())
+        self.assertEqual((backup_path / "CLAUDE.md").read_text(), "User content after /init")
+
+    @patch('detach.get_project_path')
+    def test_reattach_no_conflicts_no_backup(self, mock_get_path):
+        """Should not create backup directory when no conflicts exist."""
+        mock_get_path.return_value = self.project_dir
+
+        # Create Autocoder files and backup them
+        (self.project_dir / "CLAUDE.md").write_text("Autocoder content")
+        files = detach.get_autocoder_files(self.project_dir)
+        detach.create_backup(self.project_dir, "test-project", files)
+
+        # No user files created (no conflict)
+
+        # Reattach
+        success, message, files_restored, conflicts = detach.reattach_project("test-project")
+
+        self.assertTrue(success)
+        self.assertEqual(conflicts, [])
+        self.assertNotIn("user files", message)
+
+        # No pre-reattach backup should exist
+        backup_path = self.project_dir / detach.PRE_REATTACH_BACKUP_DIR
+        self.assertFalse(backup_path.exists())
+
+    def test_restore_pre_reattach_backup(self):
+        """Should restore user files from pre-reattach backup."""
+        # Create pre-reattach backup
+        backup_dir = self.project_dir / detach.PRE_REATTACH_BACKUP_DIR
+        backup_dir.mkdir()
+        (backup_dir / "CLAUDE.md").write_text("User content")
+        (backup_dir / "nested").mkdir()
+        (backup_dir / "nested" / "file.txt").write_text("Nested user file")
+
+        # Restore
+        files_restored = detach.restore_pre_reattach_backup(self.project_dir)
+
+        self.assertEqual(files_restored, 2)
+        self.assertEqual((self.project_dir / "CLAUDE.md").read_text(), "User content")
+        self.assertEqual((self.project_dir / "nested" / "file.txt").read_text(), "Nested user file")
+
+        # Backup directory should be removed
+        self.assertFalse(backup_dir.exists())
+
+    def test_restore_pre_reattach_backup_path_traversal(self):
+        """Should skip files with path traversal in pre-reattach backup."""
+        backup_dir = self.project_dir / detach.PRE_REATTACH_BACKUP_DIR
+        backup_dir.mkdir()
+
+        # Create a normal file
+        (backup_dir / "safe.txt").write_text("Safe content")
+
+        # Note: Path traversal protection is tested by the restore function
+        # which validates each path before restoring. We can't easily create
+        # a malicious backup file, but the validation logic ensures safety.
+
+        # Restore should only restore safe.txt
+        files_restored = detach.restore_pre_reattach_backup(self.project_dir)
+        self.assertEqual(files_restored, 1)
+        self.assertEqual((self.project_dir / "safe.txt").read_text(), "Safe content")
+
+    @patch('detach.get_project_path')
+    def test_detach_restores_user_files(self, mock_get_path):
+        """Should restore user files from pre-reattach backup on detach."""
+        mock_get_path.return_value = self.project_dir
+
+        # Create pre-reattach backup (from previous reattach)
+        backup_dir = self.project_dir / detach.PRE_REATTACH_BACKUP_DIR
+        backup_dir.mkdir()
+        (backup_dir / "CLAUDE.md").write_text("User content from previous session")
+
+        # Create Autocoder files
+        (self.project_dir / ".autocoder").mkdir()
+        (self.project_dir / "features.db").touch()
+
+        # Detach
+        success, message, manifest, user_files_restored = detach.detach_project("test-project")
+
+        self.assertTrue(success)
+        self.assertEqual(user_files_restored, 1)
+        self.assertIn("restored 1 user files", message)
+
+        # User file restored
+        self.assertEqual((self.project_dir / "CLAUDE.md").read_text(), "User content from previous session")
+
+        # Pre-reattach backup cleaned up
+        self.assertFalse(backup_dir.exists())
+
+    @patch('detach.get_project_path')
+    def test_full_cycle_preserves_both_files(self, mock_get_path):
+        """Full cycle: detach -> create user file -> reattach -> detach preserves both."""
+        mock_get_path.return_value = self.project_dir
+
+        # Initial state: Autocoder files
+        (self.project_dir / "CLAUDE.md").write_text("Autocoder CLAUDE.md")
+        (self.project_dir / "features.db").touch()
+
+        # Step 1: Detach
+        success, msg, manifest, user_restored = detach.detach_project("test-project")
+        self.assertTrue(success)
+        self.assertEqual(user_restored, 0)  # No user files to restore initially
+
+        # Step 2: User creates their own CLAUDE.md (e.g., via /init)
+        (self.project_dir / "CLAUDE.md").write_text("User CLAUDE.md from /init")
+
+        # Step 3: Reattach
+        success, msg, files_restored, conflicts = detach.reattach_project("test-project")
+        self.assertTrue(success)
+        self.assertEqual(conflicts, ["CLAUDE.md"])  # User file was backed up
+
+        # Autocoder content restored
+        self.assertEqual((self.project_dir / "CLAUDE.md").read_text(), "Autocoder CLAUDE.md")
+
+        # User content in pre-reattach backup
+        self.assertEqual(
+            (self.project_dir / detach.PRE_REATTACH_BACKUP_DIR / "CLAUDE.md").read_text(),
+            "User CLAUDE.md from /init"
+        )
+
+        # Step 4: Detach again
+        success, msg, manifest, user_restored = detach.detach_project("test-project")
+        self.assertTrue(success)
+        self.assertEqual(user_restored, 1)  # User file restored
+
+        # User content back in place
+        self.assertEqual((self.project_dir / "CLAUDE.md").read_text(), "User CLAUDE.md from /init")
+
+        # Pre-reattach backup cleaned up
+        self.assertFalse((self.project_dir / detach.PRE_REATTACH_BACKUP_DIR).exists())
+
+    @patch('detach.get_project_path')
+    def test_reattach_merges_existing_pre_reattach_backup(self, mock_get_path):
+        """Should merge new conflicts with existing pre-reattach backup."""
+        mock_get_path.return_value = self.project_dir
+
+        # Create existing pre-reattach backup
+        backup_dir = self.project_dir / detach.PRE_REATTACH_BACKUP_DIR
+        backup_dir.mkdir()
+        (backup_dir / "old_user_file.txt").write_text("Old user file")
+
+        # Create Autocoder files and backup
+        (self.project_dir / "CLAUDE.md").write_text("Autocoder CLAUDE.md")
+        files = detach.get_autocoder_files(self.project_dir)
+        detach.create_backup(self.project_dir, "test", files)
+
+        # User creates new CLAUDE.md
+        (self.project_dir / "CLAUDE.md").write_text("New user CLAUDE.md")
+
+        # Reattach - should merge, not overwrite
+        success, msg, files_restored, conflicts = detach.reattach_project("test")
+        self.assertTrue(success)
+        self.assertEqual(conflicts, ["CLAUDE.md"])
+
+        # Both files should exist in backup
+        self.assertEqual((backup_dir / "old_user_file.txt").read_text(), "Old user file")
+        self.assertEqual((backup_dir / "CLAUDE.md").read_text(), "New user CLAUDE.md")
+
+    def test_backup_conflicts_does_not_overwrite_existing(self):
+        """Backup should not overwrite existing files (merge mode)."""
+        # Create pre-reattach backup with existing file
+        backup_dir = self.project_dir / detach.PRE_REATTACH_BACKUP_DIR
+        backup_dir.mkdir()
+        (backup_dir / "CLAUDE.md").write_text("Original backup")
+
+        # Create conflicting file
+        (self.project_dir / "CLAUDE.md").write_text("New content")
+
+        # Backup conflicts
+        detach.backup_conflicts(self.project_dir, ["CLAUDE.md"])
+
+        # Original backup should be preserved
+        self.assertEqual((backup_dir / "CLAUDE.md").read_text(), "Original backup")
+
+
+class TestGitignorePreReattachBackup(unittest.TestCase):
+    """Tests for .pre-reattach-backup/ in .gitignore."""
+
+    def setUp(self):
+        """Create temporary project directory."""
+        self.temp_dir = tempfile.mkdtemp()
+        self.project_dir = Path(self.temp_dir)
+
+    def tearDown(self):
+        """Clean up temporary directory."""
+        shutil.rmtree(self.temp_dir)
+
+    def test_gitignore_includes_both_backup_dirs(self):
+        """Should add both backup directories to .gitignore."""
+        detach.update_gitignore(self.project_dir)
+
+        gitignore = self.project_dir / ".gitignore"
+        content = gitignore.read_text()
+        lines = content.splitlines()
+
+        # Both patterns should be present as standalone lines
+        self.assertTrue(any(line.strip() == f"{detach.BACKUP_DIR}/" for line in lines))
+        self.assertTrue(any(line.strip() == f"{detach.PRE_REATTACH_BACKUP_DIR}/" for line in lines))
+
+    def test_gitignore_appends_missing_patterns(self):
+        """Should append only missing patterns to existing .gitignore."""
+        gitignore = self.project_dir / ".gitignore"
+        gitignore.write_text(f"{detach.BACKUP_DIR}/\n")
+
+        detach.update_gitignore(self.project_dir)
+
+        content = gitignore.read_text()
+        # BACKUP_DIR should appear once, PRE_REATTACH_BACKUP_DIR should be added
+        self.assertEqual(content.count(f"{detach.BACKUP_DIR}/"), 1)
+        self.assertIn(f"{detach.PRE_REATTACH_BACKUP_DIR}/", content)
 
 
 if __name__ == "__main__":

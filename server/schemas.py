@@ -77,6 +77,7 @@ class DetachResponse(BaseModel):
     backup_size: int
     backup_path: str  # Relative path to backup directory (not absolute for security)
     message: str = ""
+    user_files_restored: int = 0  # User files restored from pre-reattach backup
 
 
 class ReattachResponse(BaseModel):
@@ -84,6 +85,8 @@ class ReattachResponse(BaseModel):
     success: bool
     files_restored: int
     message: str = ""
+    conflicts: list[str] = []  # List of user files that were backed up
+    conflicts_backup_path: str | None = None  # Path to backup dir if conflicts exist
 
 
 class DetachStatusResponse(BaseModel):
