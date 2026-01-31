@@ -18,7 +18,7 @@ import shutil
 import subprocess
 from datetime import datetime
 from pathlib import Path
-from typing import TypedDict
+from typing import Any, TypedDict, cast
 
 
 class QualityCheckResult(TypedDict):
@@ -407,7 +407,7 @@ def load_quality_config(project_dir: Path) -> dict:
                 result[key] = quality_config[key]
 
         if "checks" in quality_config:
-            result["checks"] = {**defaults["checks"], **quality_config["checks"]}
+            result["checks"] = {**cast(dict[str, Any], defaults["checks"]), **cast(dict[str, Any], quality_config["checks"])}
 
         return result
     except (json.JSONDecodeError, OSError):
