@@ -369,9 +369,12 @@ class ReactAnalyzer(BaseAnalyzer):
         """Extract React components."""
         components: list[ComponentInfo] = []
 
-        # Find component files
-        component_files = self._find_files("**/components/**/*.tsx") + \
-                         self._find_files("**/components/**/*.jsx")
+        # Find component files (include .js for JavaScript projects)
+        component_files = (
+            self._find_files("**/components/**/*.tsx") +
+            self._find_files("**/components/**/*.jsx") +
+            self._find_files("**/components/**/*.js")
+        )
 
         for file in component_files:
             components.append({
@@ -380,9 +383,12 @@ class ReactAnalyzer(BaseAnalyzer):
                 "type": "component",
             })
 
-        # Find page files
-        page_files = self._find_files("**/pages/**/*.tsx") + \
-                    self._find_files("**/pages/**/*.jsx")
+        # Find page files (include .js for JavaScript projects)
+        page_files = (
+            self._find_files("**/pages/**/*.tsx") +
+            self._find_files("**/pages/**/*.jsx") +
+            self._find_files("**/pages/**/*.js")
+        )
 
         for file in page_files:
             if not file.name.startswith("_"):
