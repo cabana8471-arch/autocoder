@@ -1458,5 +1458,188 @@ class TestGitignorePreReattachBackup(unittest.TestCase):
         self.assertIn(f"{detach.PRE_REATTACH_BACKUP_DIR}/", content)
 
 
+class TestOrphanedDbCleanup(unittest.TestCase):
+    """Tests for orphaned database file cleanup during reattach."""
+
+    def setUp(self):
+        """Create temporary project with backup."""
+        self.temp_dir = tempfile.mkdtemp()
+        self.project_dir = Path(self.temp_dir)
+
+        # Create Autocoder files with realistic database
+        (self.project_dir / ".autocoder").mkdir()
+        # Create a features.db that's larger than an empty one (simulate real data)
+        (self.project_dir / "features.db").write_bytes(b"x" * 120000)  # 120KB - realistic size
+        (self.project_dir / "features.db-wal").write_bytes(b"wal")
+        (self.project_dir / "features.db-shm").write_bytes(b"shm")
+
+        # Create backup
+        files = detach.get_autocoder_files(self.project_dir)
+        detach.create_backup(self.project_dir, "test-project", files)
+
+    def tearDown(self):
+        """Clean up temporary directory."""
+        shutil.rmtree(self.temp_dir)
+
+    @patch('detach.get_project_path')
+    def test_cleanup_removes_recreated_small_db(self, mock_get_path):
+        """Should remove recreated empty database before restore."""
+        mock_get_path.return_value = self.project_dir
+
+        # Simulate API recreating empty features.db after detach
+        (self.project_dir / "features.db").write_bytes(b"x" * 4096)  # 4KB - empty SQLite
+
+        # Reattach should clean up the small file and restore the large one
+        success, message, files_restored, conflicts = detach.reattach_project("test-project")
+
+        self.assertTrue(success)
+        # The restored file should be the large one from backup
+        restored_size = (self.project_dir / "features.db").stat().st_size
+        self.assertEqual(restored_size, 120000)
+
+    @patch('detach.get_project_path')
+    def test_cleanup_removes_orphan_wal_files(self, mock_get_path):
+        """Should remove orphaned WAL/SHM files before restore."""
+        mock_get_path.return_value = self.project_dir
+
+        # Simulate orphaned WAL files created by API
+        (self.project_dir / "features.db-wal").write_bytes(b"orphan wal")
+        (self.project_dir / "features.db-shm").write_bytes(b"orphan shm")
+        (self.project_dir / "assistant.db-wal").write_bytes(b"orphan wal")
+
+        # Reattach should clean up and restore
+        success, message, files_restored, conflicts = detach.reattach_project("test-project")
+
+        self.assertTrue(success)
+        # WAL files should be from backup (or not exist if not in backup)
+        # In this case they were in original, so should be restored
+        self.assertTrue((self.project_dir / "features.db-wal").exists())
+
+    def test_cleanup_helper_function_directly(self):
+        """Test _cleanup_orphaned_db_files directly."""
+        # Create manifest
+        manifest: detach.Manifest = {
+            "version": 1,
+            "detached_at": "2024-01-01T00:00:00Z",
+            "project_name": "test",
+            "autocoder_version": "1.0.0",
+            "files": [
+                {"path": "features.db", "type": "file", "size": 120000, "checksum": "abc", "file_count": None}
+            ],
+            "total_size_bytes": 120000,
+            "file_count": 1,
+        }
+
+        # Create small recreated file at root
+        (self.project_dir / "features.db").write_bytes(b"x" * 4096)
+        (self.project_dir / "features.db-wal").write_bytes(b"wal")
+
+        # Run cleanup
+        cleaned = detach._cleanup_orphaned_db_files(self.project_dir, manifest)
+
+        # Both should be cleaned
+        self.assertIn("features.db", cleaned)
+        self.assertIn("features.db-wal", cleaned)
+        self.assertFalse((self.project_dir / "features.db").exists())
+        self.assertFalse((self.project_dir / "features.db-wal").exists())
+
+    def test_cleanup_preserves_large_user_db(self):
+        """Should NOT remove database if it's larger than backup (user modifications)."""
+        manifest: detach.Manifest = {
+            "version": 1,
+            "detached_at": "2024-01-01T00:00:00Z",
+            "project_name": "test",
+            "autocoder_version": "1.0.0",
+            "files": [
+                {"path": "features.db", "type": "file", "size": 50000, "checksum": "abc", "file_count": None}
+            ],
+            "total_size_bytes": 50000,
+            "file_count": 1,
+        }
+
+        # Create larger file at root (user added data)
+        (self.project_dir / "features.db").write_bytes(b"x" * 100000)
+
+        # Run cleanup
+        cleaned = detach._cleanup_orphaned_db_files(self.project_dir, manifest)
+
+        # features.db should NOT be cleaned (it's larger)
+        self.assertNotIn("features.db", cleaned)
+        self.assertTrue((self.project_dir / "features.db").exists())
+
+
+class TestServerDependencies(unittest.TestCase):
+    """Tests for server/dependencies.py validation functions."""
+
+    def setUp(self):
+        """Create temporary project directory."""
+        self.temp_dir = tempfile.mkdtemp()
+        self.project_dir = Path(self.temp_dir)
+
+    def tearDown(self):
+        """Clean up temporary directory."""
+        shutil.rmtree(self.temp_dir)
+
+    def test_validate_project_not_detached_raises_on_detached(self):
+        """Should raise HTTPException 409 for detached project."""
+        # Import here to avoid issues if server not set up
+        try:
+            from fastapi import HTTPException
+
+            from server.dependencies import validate_project_not_detached
+        except ImportError:
+            self.skipTest("Server dependencies not available")
+
+        # Create detached state (backup with manifest)
+        backup_dir = self.project_dir / detach.BACKUP_DIR
+        backup_dir.mkdir()
+        (backup_dir / detach.MANIFEST_FILE).write_text("{}")
+
+        with patch('server.dependencies._get_registry_module') as mock_registry:
+            mock_registry.return_value = lambda x: self.project_dir
+
+            with self.assertRaises(HTTPException) as ctx:
+                validate_project_not_detached("test-project")
+
+            self.assertEqual(ctx.exception.status_code, 409)
+            self.assertIn("detached", ctx.exception.detail)
+
+    def test_validate_project_not_detached_passes_for_attached(self):
+        """Should return project_dir for attached project."""
+        try:
+            from server.dependencies import validate_project_not_detached
+        except ImportError:
+            self.skipTest("Server dependencies not available")
+
+        # Create attached state (files at root, no backup)
+        (self.project_dir / "features.db").touch()
+
+        with patch('server.dependencies._get_registry_module') as mock_registry:
+            mock_registry.return_value = lambda x: self.project_dir
+
+            result = validate_project_not_detached("test-project")
+            self.assertEqual(result, self.project_dir)
+
+    def test_check_project_detached_for_background_returns_bool(self):
+        """Background check should return bool, not raise."""
+        try:
+            from server.dependencies import check_project_detached_for_background
+        except ImportError:
+            self.skipTest("Server dependencies not available")
+
+        # Attached state
+        (self.project_dir / "features.db").touch()
+        result = check_project_detached_for_background(self.project_dir)
+        self.assertFalse(result)
+
+        # Detached state
+        backup_dir = self.project_dir / detach.BACKUP_DIR
+        backup_dir.mkdir()
+        (backup_dir / detach.MANIFEST_FILE).write_text("{}")
+
+        result = check_project_detached_for_background(self.project_dir)
+        self.assertTrue(result)
+
+
 if __name__ == "__main__":
     unittest.main()
