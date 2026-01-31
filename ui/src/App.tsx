@@ -283,6 +283,7 @@ function App() {
                     projectName={selectedProject}
                     status={wsState.agentStatus}
                     defaultConcurrency={selectedProjectData?.default_concurrency}
+                    isDetached={isDetached}
                   />
 
                   <DevServerControl
