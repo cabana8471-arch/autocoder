@@ -374,6 +374,7 @@ def create_backup(
     # Create backup directory
     backup_dir.mkdir(parents=True, exist_ok=True)
     copied_files: list[Path] = []
+    phase = 1  # Track phase: 1=Copy, 2=Manifest, 3=Delete originals
 
     try:
         # Phase 1: Copy files to backup (preserves originals on failure)
@@ -398,11 +399,13 @@ def create_backup(
             logger.debug("Copied %s to backup", relative_path)
 
         # Phase 2: Write manifest (before deleting originals)
+        phase = 2
         manifest_path = backup_dir / MANIFEST_FILE
         with open(manifest_path, "w", encoding="utf-8") as f:
             json.dump(manifest, f, indent=2)
 
         # Phase 3: Delete originals (only after successful copy + manifest)
+        phase = 3
         for file_path in files:
             if file_path.is_dir() and not file_path.is_symlink():
                 shutil.rmtree(file_path)
@@ -411,10 +414,14 @@ def create_backup(
             logger.debug("Removed original: %s", file_path.relative_to(project_dir))
 
     except Exception as e:
-        # Cleanup partial backup on failure
-        logger.error("Backup failed: %s - cleaning up partial backup", e)
-        if backup_dir.exists():
-            shutil.rmtree(backup_dir)
+        # Cleanup partial backup on failure - but only for Phase 1/2
+        # Phase 3 failure means backup is valid, keep it for recovery
+        if phase < 3:
+            logger.error("Backup failed in phase %d: %s - cleaning up partial backup", phase, e)
+            if backup_dir.exists():
+                shutil.rmtree(backup_dir)
+        else:
+            logger.error("Delete originals failed in phase 3: %s - backup preserved for recovery", e)
         raise
 
     return manifest
@@ -579,13 +586,13 @@ def restore_backup(project_dir: Path, verify_checksums: bool = False) -> tuple[b
     if restored_count == expected_count:
         shutil.rmtree(backup_dir)
         logger.info("Backup directory removed after successful restore")
+        return True, files_restored, conflicts
     else:
         logger.warning(
             "Partial restore: %d/%d files - backup preserved",
             restored_count, expected_count
         )
-
-    return True, files_restored, conflicts
+        return False, files_restored, conflicts
 
 
 def update_gitignore(project_dir: Path) -> None:
@@ -626,8 +633,15 @@ def detect_conflicts(project_dir: Path, manifest: Manifest) -> list[str]:
         List of relative path strings for conflicting files
     """
     conflicts = []
+    project_dir_resolved = project_dir.resolve()
     for entry in manifest["files"]:
         dest = project_dir / entry["path"]
+        # SECURITY: Validate path to prevent path traversal attacks
+        try:
+            dest.resolve().relative_to(project_dir_resolved)
+        except ValueError:
+            logger.error("Path traversal detected in manifest: %s", entry["path"])
+            continue  # Skip malicious path
         if dest.exists():
             conflicts.append(entry["path"])
     return conflicts
@@ -647,10 +661,18 @@ def backup_conflicts(project_dir: Path, conflicts: list[str]) -> Path:
     """
     backup_dir = project_dir / PRE_REATTACH_BACKUP_DIR
     backup_dir.mkdir(parents=True, exist_ok=True)
+    backup_dir_resolved = backup_dir.resolve()
 
     for rel_path in conflicts:
         src = project_dir / rel_path
         dest = backup_dir / rel_path
+
+        # SECURITY: Validate path to prevent path traversal attacks
+        try:
+            dest.resolve().relative_to(backup_dir_resolved)
+        except ValueError:
+            logger.error("Path traversal detected in conflicts: %s", rel_path)
+            continue  # Skip malicious path
 
         # Don't overwrite existing backups (merge mode)
         if dest.exists():

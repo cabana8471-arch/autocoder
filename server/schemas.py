@@ -57,6 +57,7 @@ class ProjectDetail(BaseModel):
     stats: ProjectStats
     prompts_dir: str
     default_concurrency: int = 3
+    is_detached: bool = False  # True if Autocoder files moved to backup
 
 
 class ProjectPrompts(BaseModel):
