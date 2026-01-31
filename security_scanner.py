@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 
 class Severity(str, Enum):
@@ -68,9 +68,9 @@ class Vulnerability:
     package_name: Optional[str] = None
     package_version: Optional[str] = None
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
-        result = {
+        result: dict[str, Any] = {
             "type": self.type.value,
             "severity": self.severity.value,
             "title": self.title,
