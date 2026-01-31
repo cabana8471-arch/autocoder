@@ -147,7 +147,10 @@ def get_project_dir(project_name: str) -> Path:
     # Try to get from registry
     project_path = get_project_path(project_name)
     if project_path:
-        return Path(project_path)
+        path = Path(project_path)
+        if path.exists() and path.is_dir():
+            return path
+        # Fall through to direct path check
 
     # Check if it's a direct path
     path = Path(project_name)
@@ -163,7 +166,7 @@ def get_project_dir(project_name: str) -> Path:
 
 
 @router.post("/run", response_model=RunReviewResponse)
-async def run_code_review(request: RunReviewRequest):
+def run_code_review(request: RunReviewRequest):
     """
     Run code review on a project.
 
@@ -233,7 +236,7 @@ async def run_code_review(request: RunReviewRequest):
 
 
 @router.get("/reports/{project_name}", response_model=ReportListResponse)
-async def list_reports(project_name: str):
+def list_reports(project_name: str):
     """
     List all review reports for a project.
     """
@@ -269,7 +272,7 @@ async def list_reports(project_name: str):
 
 
 @router.get("/reports/{project_name}/{filename}")
-async def get_report(project_name: str, filename: str):
+def get_report(project_name: str, filename: str):
     """
     Get a specific review report.
     """
@@ -291,7 +294,7 @@ async def get_report(project_name: str, filename: str):
 
 
 @router.post("/create-features", response_model=CreateFeaturesResponse)
-async def create_features_from_issues(request: CreateFeaturesRequest):
+def create_features_from_issues(request: CreateFeaturesRequest):
     """
     Create features from review issues.
 
@@ -361,7 +364,7 @@ async def create_features_from_issues(request: CreateFeaturesRequest):
 
 
 @router.delete("/reports/{project_name}/{filename}")
-async def delete_report(project_name: str, filename: str):
+def delete_report(project_name: str, filename: str):
     """
     Delete a specific review report.
     """
