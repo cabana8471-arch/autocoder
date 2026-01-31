@@ -148,22 +148,81 @@ class TestGetAutocoderFiles(unittest.TestCase):
         self.assertEqual(len(files), 3)  # 1 directory + 2 files
 
     def test_does_not_capture_user_files_at_root(self):
-        """Should NOT capture user files matching patterns if at project root.
+        """Should NOT capture generic user files matching patterns if at project root.
 
         This prevents accidentally moving user files like test-myfeature.py.
-        Patterns are only applied within Autocoder-owned directories.
+        Generic patterns are only applied within Autocoder-owned directories.
+        More specific patterns (test-feature*.py) are allowed at root.
         """
         # User files at project root - should NOT be captured
         (self.project_dir / "test-myfeature.py").touch()
         (self.project_dir / "test-user-data.json").touch()
-        (self.project_dir / "generate-report.py").touch()
 
         files = detach.get_autocoder_files(self.project_dir)
         self.assertEqual(len(files), 0)
         names = {f.name for f in files}
         self.assertNotIn("test-myfeature.py", names)
         self.assertNotIn("test-user-data.json", names)
-        self.assertNotIn("generate-report.py", names)
+
+    def test_detects_feature_test_files_at_root(self):
+        """Should detect test-feature*.py files at project root.
+
+        These are agent-generated feature test files that should be moved.
+        """
+        (self.project_dir / "test-feature184-missing-config.py").touch()
+        (self.project_dir / "test-feature182-log-archiving.py").touch()
+        (self.project_dir / "test-feature100-basic.json").touch()
+
+        files = detach.get_autocoder_files(self.project_dir)
+        names = {f.name for f in files}
+        self.assertIn("test-feature184-missing-config.py", names)
+        self.assertIn("test-feature182-log-archiving.py", names)
+        self.assertIn("test-feature100-basic.json", names)
+        self.assertEqual(len(files), 3)
+
+    def test_detects_generate_files_at_root(self):
+        """Should detect generate-*.py files at project root."""
+        (self.project_dir / "generate-100items.py").touch()
+        (self.project_dir / "generate-test-data.py").touch()
+
+        files = detach.get_autocoder_files(self.project_dir)
+        names = {f.name for f in files}
+        self.assertIn("generate-100items.py", names)
+        self.assertIn("generate-test-data.py", names)
+        self.assertEqual(len(files), 2)
+
+    def test_detects_mark_feature_files_at_root(self):
+        """Should detect mark_feature*.py files at project root."""
+        (self.project_dir / "mark_feature123.py").touch()
+        (self.project_dir / "mark_feature_passing.py").touch()
+
+        files = detach.get_autocoder_files(self.project_dir)
+        names = {f.name for f in files}
+        self.assertIn("mark_feature123.py", names)
+        self.assertIn("mark_feature_passing.py", names)
+        self.assertEqual(len(files), 2)
+
+    def test_detects_rollback_json_at_root(self):
+        """Should detect rollback-*.json files at project root."""
+        (self.project_dir / "rollback-test-translated.json").touch()
+        (self.project_dir / "rollback-migration.json").touch()
+
+        files = detach.get_autocoder_files(self.project_dir)
+        names = {f.name for f in files}
+        self.assertIn("rollback-test-translated.json", names)
+        self.assertIn("rollback-migration.json", names)
+        self.assertEqual(len(files), 2)
+
+    def test_detects_create_test_php_at_root(self):
+        """Should detect create-*-test*.php files at project root."""
+        (self.project_dir / "create-xss-test.php").touch()
+        (self.project_dir / "create-csrf-test-page.php").touch()
+
+        files = detach.get_autocoder_files(self.project_dir)
+        names = {f.name for f in files}
+        self.assertIn("create-xss-test.php", names)
+        self.assertIn("create-csrf-test-page.php", names)
+        self.assertEqual(len(files), 2)
 
     def test_excludes_artifacts_when_disabled(self):
         """Should exclude .playwright-mcp when include_artifacts=False."""
@@ -351,6 +410,21 @@ class TestBackupRestore(unittest.TestCase):
         self.assertEqual(files_restored, 0)
         self.assertEqual(conflicts, [])
 
+    def test_partial_restore_removes_manifest(self):
+        """Partial restore should remove manifest to allow re-detach."""
+        # Remove one backup file to simulate partial restore
+        backup_dir = self.project_dir / detach.BACKUP_DIR
+        (backup_dir / "features.db").unlink()
+
+        success, files_restored, conflicts = detach.restore_backup(self.project_dir)
+
+        # Should fail (partial restore)
+        self.assertFalse(success)
+        # Manifest should be removed to allow re-detach
+        self.assertFalse((backup_dir / detach.MANIFEST_FILE).exists())
+        # Backup directory should still exist (preserving remaining files)
+        self.assertTrue(backup_dir.exists())
+
 
 class TestDetachStatus(unittest.TestCase):
     """Tests for status checking functions."""
@@ -409,6 +483,90 @@ class TestDetachStatus(unittest.TestCase):
         info = detach.get_backup_info(self.project_dir)
         self.assertIsNone(info)
 
+    @patch('detach.get_project_path')
+    def test_get_detach_status_reports_state(self, mock_get_path):
+        """Should report state field in detach status."""
+        mock_get_path.return_value = self.project_dir
+
+        # Attached state
+        (self.project_dir / "features.db").touch()
+        status = detach.get_detach_status("test-project")
+        self.assertEqual(status["state"], "attached")
+        self.assertFalse(status["is_detached"])
+        self.assertFalse(status["is_inconsistent"])
+        self.assertEqual(status["files_at_root"], 1)
+
+    @patch('detach.get_project_path')
+    def test_get_detach_status_reports_inconsistent(self, mock_get_path):
+        """Should report inconsistent state in detach status."""
+        mock_get_path.return_value = self.project_dir
+
+        # Create both files at root AND backup manifest
+        (self.project_dir / "features.db").touch()
+        backup_dir = self.project_dir / detach.BACKUP_DIR
+        backup_dir.mkdir()
+        (backup_dir / detach.MANIFEST_FILE).write_text("{}")
+
+        status = detach.get_detach_status("test-project")
+        self.assertEqual(status["state"], "inconsistent")
+        self.assertFalse(status["is_detached"])
+        self.assertTrue(status["is_inconsistent"])
+        self.assertEqual(status["files_at_root"], 1)
+        self.assertTrue(status["backup_exists"])
+
+
+class TestProjectDetachState(unittest.TestCase):
+    """Tests for get_project_detach_state function."""
+
+    def setUp(self):
+        """Create temporary project directory."""
+        self.temp_dir = tempfile.mkdtemp()
+        self.project_dir = Path(self.temp_dir)
+
+    def tearDown(self):
+        """Clean up temporary directory."""
+        shutil.rmtree(self.temp_dir)
+
+    def test_state_clean_no_files_no_manifest(self):
+        """Should return 'clean' when no files and no manifest."""
+        state, files = detach.get_project_detach_state(self.project_dir)
+        self.assertEqual(state, "clean")
+        self.assertEqual(files, [])
+
+    def test_state_attached_files_present(self):
+        """Should return 'attached' when files present, no manifest."""
+        (self.project_dir / "features.db").touch()
+        (self.project_dir / ".autocoder").mkdir()
+
+        state, files = detach.get_project_detach_state(self.project_dir)
+        self.assertEqual(state, "attached")
+        self.assertEqual(len(files), 2)
+
+    def test_state_detached_manifest_only(self):
+        """Should return 'detached' when manifest exists, no files at root."""
+        backup_dir = self.project_dir / detach.BACKUP_DIR
+        backup_dir.mkdir()
+        (backup_dir / detach.MANIFEST_FILE).write_text("{}")
+
+        state, files = detach.get_project_detach_state(self.project_dir)
+        self.assertEqual(state, "detached")
+        self.assertEqual(files, [])
+
+    def test_state_inconsistent_both_exist(self):
+        """Should return 'inconsistent' when both manifest and files exist."""
+        # Create backup with manifest
+        backup_dir = self.project_dir / detach.BACKUP_DIR
+        backup_dir.mkdir()
+        (backup_dir / detach.MANIFEST_FILE).write_text("{}")
+
+        # Also create files at root (simulating partial reattach)
+        (self.project_dir / "features.db").touch()
+        (self.project_dir / ".autocoder").mkdir()
+
+        state, files = detach.get_project_detach_state(self.project_dir)
+        self.assertEqual(state, "inconsistent")
+        self.assertEqual(len(files), 2)
+
 
 class TestDetachProject(unittest.TestCase):
     """Tests for detach_project function."""
@@ -452,10 +610,15 @@ class TestDetachProject(unittest.TestCase):
 
     @patch('detach.get_project_path')
     def test_fails_if_already_detached(self, mock_get_path):
-        """Should fail if project is already detached."""
+        """Should fail if project is already detached (clean detach state)."""
         mock_get_path.return_value = self.project_dir
 
-        # Create backup
+        # Remove Autocoder files from root to simulate clean detach
+        shutil.rmtree(self.project_dir / ".autocoder")
+        (self.project_dir / "features.db").unlink()
+        shutil.rmtree(self.project_dir / "prompts")
+
+        # Create backup (simulating files moved to backup)
         backup_dir = self.project_dir / detach.BACKUP_DIR
         backup_dir.mkdir()
         (backup_dir / detach.MANIFEST_FILE).write_text("{}")
@@ -508,6 +671,44 @@ class TestDetachProject(unittest.TestCase):
         self.assertFalse(success)
         self.assertIn("No Autocoder files found", message)
         self.assertEqual(user_files_restored, 0)
+
+    @patch('detach.get_project_path')
+    def test_fails_on_inconsistent_state_without_force(self, mock_get_path):
+        """Should fail on inconsistent state without --force."""
+        mock_get_path.return_value = self.project_dir
+
+        # Create backup with manifest (simulating previous partial reattach)
+        backup_dir = self.project_dir / detach.BACKUP_DIR
+        backup_dir.mkdir()
+        (backup_dir / detach.MANIFEST_FILE).write_text("{}")
+
+        # Autocoder files also exist at root
+        success, message, manifest, user_files_restored = detach.detach_project("test-project")
+
+        self.assertFalse(success)
+        self.assertIn("Inconsistent state", message)
+        self.assertIn("--force", message)
+
+    @patch('detach.get_project_path')
+    def test_force_cleans_inconsistent_state(self, mock_get_path):
+        """Should clean up old backup with --force on inconsistent state."""
+        mock_get_path.return_value = self.project_dir
+
+        # Create backup with manifest (simulating previous partial reattach)
+        backup_dir = self.project_dir / detach.BACKUP_DIR
+        backup_dir.mkdir()
+        (backup_dir / detach.MANIFEST_FILE).write_text("{}")
+        (backup_dir / "old_features.db").write_bytes(b"old backup content")
+
+        # Autocoder files also exist at root (from partial reattach)
+        success, message, manifest, user_files_restored = detach.detach_project(
+            "test-project", force=True
+        )
+
+        self.assertTrue(success)
+        self.assertIn("files", message)
+        # New backup should be created with fresh data
+        self.assertTrue((backup_dir / detach.MANIFEST_FILE).exists())
 
 
 class TestReattachProject(unittest.TestCase):

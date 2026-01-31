@@ -80,7 +80,7 @@ AUTOCODER_FILES = {
     "claude-progress.txt",
 }
 
-# Glob patterns for generated files
+# Glob patterns for generated files (searched in AUTOCODER_DIRECTORIES only)
 AUTOCODER_PATTERNS = [
     "test-*.json",
     "test-*.py",
@@ -92,6 +92,20 @@ AUTOCODER_PATTERNS = [
     "generate-*.py",
     "mark_feature*.py",
     ".claude_settings.expand.*.json",
+]
+
+# Patterns for agent-generated files at ROOT level
+# More specific patterns to avoid false positives with user files like test-myfeature.py
+AUTOCODER_ROOT_PATTERNS = [
+    "test-feature*.json",   # Feature test data
+    "test-feature*.py",     # Feature test scripts
+    "test-feature*.html",   # Feature test pages
+    "test-feature*.sql",    # Feature test SQL
+    "test-feature*.php",    # Feature test PHP
+    "generate-*.py",        # Generator scripts
+    "mark_feature*.py",     # Feature marking scripts
+    "rollback-*.json",      # Rollback data
+    "create-*-test*.php",   # Test helper scripts
 ]
 
 
@@ -204,6 +218,13 @@ def get_autocoder_files(project_dir: Path, include_artifacts: bool = True) -> li
                     if match.exists() and match not in files:
                         files.append(match)
 
+    # Check ROOT-safe patterns at project root level
+    # These are more specific patterns to avoid false positives
+    for pattern in AUTOCODER_ROOT_PATTERNS:
+        for match in project_dir.glob(pattern):  # glob, not rglob - root level only
+            if match.exists() and match not in files:
+                files.append(match)
+
     return sorted(files, key=lambda p: p.name)
 
 
@@ -211,6 +232,37 @@ def is_project_detached(project_dir: Path) -> bool:
     """Check if a project is currently detached."""
     manifest_path = project_dir / BACKUP_DIR / MANIFEST_FILE
     return manifest_path.exists()
+
+
+def get_project_detach_state(project_dir: Path, include_artifacts: bool = True) -> tuple[str, list[Path]]:
+    """
+    Determine the actual detach state of a project.
+
+    This function detects inconsistent states where both manifest AND files exist,
+    which can happen after a partial reattach operation.
+
+    Args:
+        project_dir: Path to the project directory
+        include_artifacts: Whether to include .playwright-mcp and other artifacts
+
+    Returns:
+        Tuple of (state, files) where state is one of:
+        - "detached": Manifest exists, no Autocoder files at root
+        - "attached": No manifest, files present at root
+        - "inconsistent": Both manifest and files exist (needs cleanup)
+        - "clean": No manifest, no Autocoder files
+    """
+    manifest_exists = is_project_detached(project_dir)
+    files = get_autocoder_files(project_dir, include_artifacts=include_artifacts)
+
+    if manifest_exists and files:
+        return "inconsistent", files
+    elif manifest_exists and not files:
+        return "detached", []
+    elif not manifest_exists and files:
+        return "attached", files
+    else:
+        return "clean", []
 
 
 def has_backup(project_dir: Path) -> bool:
@@ -595,8 +647,11 @@ def restore_backup(project_dir: Path, verify_checksums: bool = False) -> tuple[b
         logger.info("Backup directory removed after successful restore")
         return True, files_restored, conflicts
     else:
+        # Partial restore - delete manifest to allow re-detach, but keep backup files
+        manifest_path = backup_dir / MANIFEST_FILE
+        manifest_path.unlink(missing_ok=True)
         logger.warning(
-            "Partial restore: %d/%d files - backup preserved",
+            "Partial restore: %d/%d files - manifest removed to allow re-detach, backup files preserved",
             restored_count, expected_count
         )
         return False, files_restored, conflicts
@@ -769,9 +824,27 @@ def detach_project(
     project_dir = Path(project_dir).resolve()
     project_name = name_or_path
 
-    # Check if already detached
-    if is_project_detached(project_dir):
+    # Check project state
+    state, existing_files = get_project_detach_state(project_dir, include_artifacts)
+
+    if state == "detached":
         return False, "Project is already detached. Use --reattach to restore.", None, 0
+    elif state == "inconsistent":
+        # Files exist but so does manifest - likely partial reattach
+        # Clean up old backup and proceed with fresh detach
+        if not force:
+            return False, (
+                "Inconsistent state detected: backup manifest exists but Autocoder files are also present. "
+                "This can happen after a partial reattach. Use --force to clean up and detach."
+            ), None, 0
+        # Force mode: remove old backup and proceed
+        backup_dir = project_dir / BACKUP_DIR
+        if not dry_run:
+            shutil.rmtree(backup_dir)
+            logger.info("Removed stale backup directory due to --force")
+    elif state == "clean":
+        return False, "No Autocoder files found in project.", None, 0
+    # state == "attached" -> proceed normally with existing_files
 
     # Check for agent lock
     agent_lock = project_dir / ".agent.lock"
@@ -783,8 +856,8 @@ def detach_project(
         return False, "Another detach operation is in progress.", None, 0
 
     try:
-        # Get files to move
-        files = get_autocoder_files(project_dir, include_artifacts)
+        # Use files from state detection if available, otherwise get them fresh
+        files = existing_files if existing_files else get_autocoder_files(project_dir, include_artifacts)
         if not files:
             return False, "No Autocoder files found in project.", None, 0
 
@@ -864,25 +937,37 @@ def get_detach_status(name_or_path: str) -> dict:
         name_or_path: Project name (from registry) or absolute path
 
     Returns:
-        Dict with status information
+        Dict with status information including:
+        - state: "detached", "attached", "inconsistent", or "clean"
+        - is_detached: True if cleanly detached
+        - is_inconsistent: True if both manifest and files exist
+        - files_at_root: Number of Autocoder files at project root
+        - backup_exists: True if backup directory exists
     """
     project_dir = get_project_path(name_or_path)
     if project_dir is None:
         project_dir = Path(name_or_path)
         if not project_dir.exists():
             return {
+                "state": "error",
                 "is_detached": False,
+                "is_inconsistent": False,
+                "files_at_root": 0,
                 "backup_exists": False,
                 "error": f"Project '{name_or_path}' not found",
             }
 
     project_dir = Path(project_dir).resolve()
-    is_detached = is_project_detached(project_dir)
-    manifest = get_backup_info(project_dir) if is_detached else None
+    state, files = get_project_detach_state(project_dir)
+    backup_dir = project_dir / BACKUP_DIR
+    manifest = get_backup_info(project_dir) if backup_dir.exists() else None
 
     return {
-        "is_detached": is_detached,
-        "backup_exists": is_detached,
+        "state": state,
+        "is_detached": state == "detached",
+        "is_inconsistent": state == "inconsistent",
+        "files_at_root": len(files),
+        "backup_exists": backup_dir.exists(),
         "backup_size": manifest["total_size_bytes"] if manifest else None,
         "detached_at": manifest["detached_at"] if manifest else None,
         "file_count": manifest["file_count"] if manifest else None,
@@ -1021,15 +1106,24 @@ Examples:
 
             print(f"\nProject: {args.project}")
             print("-" * 40)
-            if status_info["is_detached"]:
+            state = status_info.get("state", "unknown")
+            if state == "detached":
                 print("  Status: DETACHED")
                 print(f"  Detached at: {status_info['detached_at']}")
                 backup_size = status_info['backup_size']
                 if backup_size is not None:
                     print(f"  Backup size: {backup_size / 1024 / 1024:.1f} MB")
                 print(f"  Files in backup: {status_info['file_count']}")
-            else:
+            elif state == "inconsistent":
+                print("  Status: INCONSISTENT (needs cleanup)")
+                print(f"  Files at root: {status_info['files_at_root']}")
+                print("  Backup manifest exists but Autocoder files also present.")
+                print("  Use --force to clean up and detach.")
+            elif state == "attached":
                 print("  Status: attached (Autocoder files present)")
+                print(f"  Files at root: {status_info['files_at_root']}")
+            else:
+                print("  Status: clean (no Autocoder files)")
             print()
             return 0
 
