@@ -30,12 +30,15 @@ export interface DetachResponse {
   backup_size: number
   backup_path: string
   message: string
+  user_files_restored?: number
 }
 
 export interface ReattachResponse {
   success: boolean
   files_restored: number
   message: string
+  conflicts?: string[]
+  conflicts_backup_path?: string
 }
 
 export interface DetachStatusResponse {

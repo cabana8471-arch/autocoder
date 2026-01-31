@@ -52,8 +52,8 @@ def get_autocoder_version() -> str:
                 data = tomllib.load(f)
                 version = data.get("project", {}).get("version", "1.0.0")
                 return str(version) if version is not None else "1.0.0"
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to read version from pyproject.toml: %s", e)
     return "1.0.0"  # Fallback
 
 
@@ -686,6 +686,7 @@ def restore_pre_reattach_backup(project_dir: Path) -> int:
 
     project_dir_resolved = project_dir.resolve()
     files_restored = 0
+    files_failed = 0
 
     for item in backup_dir.rglob("*"):
         if item.is_file():
@@ -699,14 +700,21 @@ def restore_pre_reattach_backup(project_dir: Path) -> int:
                 logger.error("Path traversal detected in pre-reattach backup: %s", rel_path)
                 continue  # Skip malicious path
 
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(item, dest)
-            files_restored += 1
-            logger.debug("Restored user file: %s", rel_path)
+            try:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(item, dest)
+                files_restored += 1
+                logger.debug("Restored user file: %s", rel_path)
+            except OSError as e:
+                logger.error("Failed to restore user file %s: %s", rel_path, e)
+                files_failed += 1
 
-    # Clean up backup directory after successful restore
-    shutil.rmtree(backup_dir)
-    logger.info("Removed %s after restoring %d files", PRE_REATTACH_BACKUP_DIR, files_restored)
+    # Only clean up backup directory if all files were restored successfully
+    if files_failed == 0:
+        shutil.rmtree(backup_dir)
+        logger.info("Removed %s after restoring %d files", PRE_REATTACH_BACKUP_DIR, files_restored)
+    else:
+        logger.warning("Kept %s - %d files failed to restore", PRE_REATTACH_BACKUP_DIR, files_failed)
 
     return files_restored
 
