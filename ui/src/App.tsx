@@ -77,7 +77,8 @@ function App() {
 
   // Get selected project data FIRST (needed for isDetached check)
   const selectedProjectData = projects?.find(p => p.name === selectedProject)
-  const isDetached = selectedProjectData?.is_detached ?? false
+  // While projects are loading, treat as detached to prevent premature API calls
+  const isDetached = projectsLoading ? true : (selectedProjectData?.is_detached ?? false)
   const hasSpec = selectedProjectData?.has_spec ?? true
 
   // Now use features with detach flag
