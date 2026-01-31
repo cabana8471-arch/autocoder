@@ -49,7 +49,8 @@ def get_autocoder_version() -> str:
         if pyproject_path.exists():
             with open(pyproject_path, "rb") as f:
                 data = tomllib.load(f)
-                return data.get("project", {}).get("version", "1.0.0")
+                version = data.get("project", {}).get("version", "1.0.0")
+                return str(version) if version is not None else "1.0.0"
     except Exception:
         pass
     return "1.0.0"  # Fallback
@@ -225,7 +226,8 @@ def get_backup_info(project_dir: Path) -> Manifest | None:
 
     try:
         with open(manifest_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data: Manifest = json.load(f)
+            return data
     except (json.JSONDecodeError, OSError) as e:
         logger.warning("Failed to read manifest: %s", e)
         return None
@@ -850,8 +852,8 @@ Examples:
             print("\nRegistered Projects:")
             print("-" * 60)
             for p in projects:
-                status = "DETACHED" if p["is_detached"] else "attached"
-                print(f"  [{status:8}] {p['name']}")
+                status_text = "DETACHED" if p["is_detached"] else "attached"
+                print(f"  [{status_text:8}] {p['name']}")
                 print(f"            {p['path']}")
             print()
             return 0
@@ -863,18 +865,20 @@ Examples:
 
         # Handle --status
         if args.status:
-            status = get_detach_status(args.project)
-            if "error" in status:
-                print(f"Error: {status['error']}")
+            status_info = get_detach_status(args.project)
+            if "error" in status_info:
+                print(f"Error: {status_info['error']}")
                 return 1
 
             print(f"\nProject: {args.project}")
             print("-" * 40)
-            if status["is_detached"]:
+            if status_info["is_detached"]:
                 print("  Status: DETACHED")
-                print(f"  Detached at: {status['detached_at']}")
-                print(f"  Backup size: {status['backup_size'] / 1024 / 1024:.1f} MB")
-                print(f"  Files in backup: {status['file_count']}")
+                print(f"  Detached at: {status_info['detached_at']}")
+                backup_size = status_info['backup_size']
+                if backup_size is not None:
+                    print(f"  Backup size: {backup_size / 1024 / 1024:.1f} MB")
+                print(f"  Files in backup: {status_info['file_count']}")
             else:
                 print("  Status: attached (Autocoder files present)")
             print()
