@@ -31,7 +31,7 @@ import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, cast
 
 # Type aliases
 # Note: Python's logging uses "warning" but we normalize to "warn" for consistency
@@ -75,7 +75,7 @@ class StructuredLogEntry:
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary, excluding None values."""
-        result = {
+        result: dict[str, Any] = {
             "timestamp": self.timestamp,
             "level": self.level,
             "message": self.message,
@@ -170,9 +170,11 @@ class StructuredLogHandler(logging.Handler):
         try:
             # Extract structured data from record
             # Normalize "warning" -> "warn" for consistency
-            level = record.levelname.lower()
-            if level == "warning":
-                level = "warn"
+            level_str = record.levelname.lower()
+            if level_str == "warning":
+                level_str = "warn"
+            # Cast to LogLevel since we know the value is valid after normalization
+            level: LogLevel = cast(LogLevel, level_str)
             entry = StructuredLogEntry(
                 timestamp=_format_ts(datetime.now(timezone.utc)),
                 level=level,
@@ -370,8 +372,8 @@ class LogQuery:
         with self._connect() as conn:
             cursor = conn.cursor()
 
-            conditions = []
-            params = []
+            conditions: list[str] = []
+            params: list[Any] = []
 
             if level:
                 conditions.append("level = ?")
@@ -430,8 +432,8 @@ class LogQuery:
         with self._connect() as conn:
             cursor = conn.cursor()
 
-            conditions = []
-            params = []
+            conditions: list[str] = []
+            params: list[Any] = []
 
             if level:
                 conditions.append("level = ?")
@@ -448,7 +450,8 @@ class LogQuery:
 
             where_clause = " AND ".join(conditions) if conditions else "1=1"
             cursor.execute(f"SELECT COUNT(*) FROM logs WHERE {where_clause}", params)
-            return cursor.fetchone()[0]
+            result = cursor.fetchone()
+            return int(result[0]) if result else 0
 
     def get_timeline(
         self,
