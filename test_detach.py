@@ -710,6 +710,36 @@ class TestDetachProject(unittest.TestCase):
         # New backup should be created with fresh data
         self.assertTrue((backup_dir / detach.MANIFEST_FILE).exists())
 
+    @patch('detach.get_project_path')
+    def test_cleans_orphaned_backup_directory(self, mock_get_path):
+        """Detach should clean up orphaned backup directory (no manifest).
+
+        This can happen after partial reattach removes manifest but keeps
+        backup files due to restore failures.
+        """
+        mock_get_path.return_value = self.project_dir
+
+        # Create orphaned backup directory (simulates partial reattach)
+        backup_dir = self.project_dir / detach.BACKUP_DIR
+        backup_dir.mkdir()
+        (backup_dir / ".autocoder").mkdir()
+        (backup_dir / "old_features.db").write_bytes(b"orphaned backup content")
+        # NO manifest.json - this is the orphaned state
+
+        # Detach should succeed and clean up orphaned backup first
+        success, message, manifest, user_files_restored = detach.detach_project("test-project")
+
+        self.assertTrue(success)
+        self.assertIn("files", message)
+
+        # Verify features.db moved to backup (not orphaned old backup)
+        self.assertFalse((self.project_dir / "features.db").exists())
+        self.assertTrue((backup_dir / "features.db").exists())
+
+        # Verify orphaned files were cleaned up and replaced with new backup
+        self.assertFalse((backup_dir / "old_features.db").exists())
+        self.assertTrue((backup_dir / detach.MANIFEST_FILE).exists())
+
 
 class TestReattachProject(unittest.TestCase):
     """Tests for reattach_project function."""
@@ -1303,6 +1333,11 @@ class TestFileConflictDetection(unittest.TestCase):
 
         # Pre-reattach backup cleaned up
         self.assertFalse((self.project_dir / detach.PRE_REATTACH_BACKUP_DIR).exists())
+
+        # Verify features.db is in backup, not in project root (main bug fix verification)
+        backup_dir = self.project_dir / detach.BACKUP_DIR
+        self.assertFalse((self.project_dir / "features.db").exists())
+        self.assertTrue((backup_dir / "features.db").exists())
 
     @patch('detach.get_project_path')
     def test_reattach_merges_existing_pre_reattach_backup(self, mock_get_path):
