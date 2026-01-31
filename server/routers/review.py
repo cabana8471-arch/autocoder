@@ -13,6 +13,7 @@ Endpoints:
 
 import json
 import logging
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -21,6 +22,33 @@ from pydantic import BaseModel, Field
 
 from registry import get_project_path
 from review_agent import ReviewAgent
+
+
+def _get_detach_module():
+    """Lazy import of detach module."""
+    root = Path(__file__).parent.parent.parent
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    import detach
+    return detach
+
+
+def _validate_project_not_detached(project_dir: Path, project_name: str) -> None:
+    """Validate project is not detached before database operations.
+
+    Args:
+        project_dir: Path to the project directory
+        project_name: Name of the project (for error message)
+
+    Raises:
+        HTTPException 409: If project is detached
+    """
+    detach = _get_detach_module()
+    if detach.is_project_detached(project_dir):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Project '{project_name}' is detached. Reattach to access features."
+        )
 
 logger = logging.getLogger(__name__)
 
@@ -273,6 +301,10 @@ async def create_features_from_issues(request: CreateFeaturesRequest):
     from api.database import Feature, create_database
 
     project_dir = get_project_dir(request.project_name)
+
+    # Check detach status before accessing database
+    _validate_project_not_detached(project_dir, request.project_name)
+
     db_path = project_dir / "features.db"
 
     if not db_path.exists():

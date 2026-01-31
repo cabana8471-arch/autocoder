@@ -899,6 +899,62 @@ def detach_project(
             release_detach_lock(project_dir)
 
 
+def _cleanup_orphaned_db_files(project_dir: Path, manifest: Manifest) -> list[str]:
+    """Remove database files that were recreated after detach.
+
+    When the UI/API accesses a detached project, it may recreate empty
+    database files. This function detects and removes them before restore.
+
+    Heuristic: If root file is smaller than backup file, it was recreated empty.
+
+    Args:
+        project_dir: Path to the project directory
+        manifest: Backup manifest containing original file info
+
+    Returns:
+        List of files that were cleaned up
+    """
+    cleaned = []
+
+    # Build map of backup database files with their sizes
+    backup_db_files = {}
+    for entry in manifest.get("files", []):
+        path = entry.get("path", "")
+        if path in ("features.db", "assistant.db"):
+            backup_db_files[path] = entry.get("size", 0)
+
+    for db_name in ["features.db", "assistant.db"]:
+        root_file = project_dir / db_name
+
+        # If root file exists but backup also has it, check if recreated
+        if root_file.exists() and db_name in backup_db_files:
+            root_size = root_file.stat().st_size
+            backup_size = backup_db_files[db_name]
+
+            # If root is much smaller than backup, it was likely recreated empty
+            # Empty SQLite DB is typically 4-8KB, real DB with features is much larger
+            if backup_size > 0 and root_size < backup_size:
+                try:
+                    root_file.unlink()
+                    cleaned.append(db_name)
+                    logger.info(f"Removed recreated {db_name} ({root_size}B < {backup_size}B backup)")
+                except OSError as e:
+                    logger.warning(f"Failed to remove orphaned {db_name}: {e}")
+
+        # Always clean WAL/SHM files at root - they should be in backup if needed
+        for ext in ["-shm", "-wal"]:
+            wal_file = project_dir / f"{db_name}{ext}"
+            if wal_file.exists():
+                try:
+                    wal_file.unlink()
+                    cleaned.append(f"{db_name}{ext}")
+                    logger.debug(f"Removed orphaned {db_name}{ext}")
+                except OSError as e:
+                    logger.warning(f"Failed to remove {db_name}{ext}: {e}")
+
+    return cleaned
+
+
 def reattach_project(name_or_path: str) -> tuple[bool, str, int, list[str]]:
     """
     Reattach a project by restoring Autocoder files from backup.
@@ -937,6 +993,16 @@ def reattach_project(name_or_path: str) -> tuple[bool, str, int, list[str]]:
         return False, "Another detach operation is in progress.", 0, []
 
     try:
+        # Read manifest for cleanup decision
+        manifest = get_backup_info(project_dir)
+
+        # Clean up orphaned database files that may have been recreated
+        # by the UI/API accessing the detached project
+        if manifest:
+            cleaned = _cleanup_orphaned_db_files(project_dir, manifest)
+            if cleaned:
+                logger.info(f"Cleaned up {len(cleaned)} orphaned files before restore: {cleaned}")
+
         success, files_restored, conflicts = restore_backup(project_dir)
         if success:
             if conflicts:

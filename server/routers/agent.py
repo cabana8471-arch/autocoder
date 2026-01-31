@@ -7,6 +7,7 @@ Uses project registry for path lookups.
 """
 
 import re
+import sys
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -15,9 +16,17 @@ from ..schemas import AgentActionResponse, AgentStartRequest, AgentStatus
 from ..services.process_manager import get_manager
 
 
+def _get_detach_module():
+    """Lazy import of detach module."""
+    root = Path(__file__).parent.parent.parent
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    import detach
+    return detach
+
+
 def _get_project_path(project_name: str) -> Path | None:
     """Get project path from registry."""
-    import sys
     root = Path(__file__).parent.parent.parent
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
@@ -32,7 +41,6 @@ def _get_settings_defaults() -> tuple[bool, str, int]:
     Returns:
         Tuple of (yolo_mode, model, testing_agent_ratio)
     """
-    import sys
     root = Path(__file__).parent.parent.parent
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
@@ -108,6 +116,16 @@ async def start_agent(
     request: AgentStartRequest = AgentStartRequest(),
 ):
     """Start the agent for a project."""
+    # Check detach status before starting agent
+    project_dir = _get_project_path(project_name)
+    if project_dir:
+        detach = _get_detach_module()
+        if detach.is_project_detached(project_dir):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Project '{project_name}' is detached. Reattach to start agent."
+            )
+
     manager = get_project_manager(project_name)
 
     # Get defaults from global settings if not provided in request
