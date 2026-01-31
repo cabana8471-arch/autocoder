@@ -52,6 +52,9 @@ export function ImportProjectModal({
   const [registerError, setRegisterError] = useState<string | null>(null)
   const redirectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // Track if modal is active to prevent stale state updates after close/unmount
+  const isActiveRef = useRef(true)
+
   const {
     state,
     analyze,
@@ -65,8 +68,17 @@ export function ImportProjectModal({
 
   const createProject = useCreateProject()
 
+  // Set active on mount/open, inactive on close/unmount
+  useEffect(() => {
+    isActiveRef.current = isOpen
+    return () => {
+      isActiveRef.current = false
+    }
+  }, [isOpen])
+
   // Define handleClose early with useCallback so it can be used in useEffect
   const handleClose = useCallback(() => {
+    isActiveRef.current = false
     if (redirectTimeoutRef.current) {
       clearTimeout(redirectTimeoutRef.current)
       redirectTimeoutRef.current = null
@@ -113,6 +125,8 @@ export function ImportProjectModal({
   const handleFolderSelect = async (path: string) => {
     setStep('analyzing')
     const success = await analyze(path)
+    // Check if still active after async operation
+    if (!isActiveRef.current) return
     if (success) {
       setStep('detected')
     } else {
@@ -122,6 +136,8 @@ export function ImportProjectModal({
 
   const handleExtractFeatures = async () => {
     const success = await extractFeatures()
+    // Check if still active after async operation
+    if (!isActiveRef.current) return
     if (success) {
       setStep('features')
       // Expand all categories by default - need to get fresh state via callback
@@ -159,17 +175,25 @@ export function ImportProjectModal({
         specMethod: 'manual',
       })
 
+      // Check if still active after async operation
+      if (!isActiveRef.current) return
+
       // Then create features
       const success = await createFeatures(trimmedName)
+
+      // Check if still active after async operation
+      if (!isActiveRef.current) return
 
       if (success) {
         setStep('complete')
         redirectTimeoutRef.current = setTimeout(() => {
+          if (!isActiveRef.current) return
           onProjectImported(trimmedName)
           handleClose()
         }, 1500)
       }
     } catch (err) {
+      if (!isActiveRef.current) return
       setRegisterError(err instanceof Error ? err.message : 'Failed to register project')
     }
   }

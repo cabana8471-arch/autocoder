@@ -37,6 +37,13 @@ class FeatureExtractionResult(TypedDict):
     summary: str
 
 
+def _get_base_stack(stack: str | None) -> str | None:
+    """Extract base stack name from variants like 'react-vite' -> 'react'."""
+    if not stack:
+        return None
+    return stack.split("-")[0].lower()
+
+
 def _route_to_feature_name(path: str, method: str = "GET") -> str:
     """
     Convert a route path to a human-readable feature name.
@@ -116,8 +123,9 @@ def _generate_page_steps(path: str, stack: str | None) -> list[str]:
         "Verify the page title and main content are visible",
     ]
 
-    # Add stack-specific checks
-    if stack in ("react", "nextjs", "vue", "nuxt"):
+    # Add stack-specific checks (normalize to handle variants like react-vite)
+    base_stack = _get_base_stack(stack)
+    if base_stack in ("react", "nextjs", "vue", "nuxt", "angular"):
         steps.append("Verify no console errors in browser developer tools")
         steps.append("Verify responsive layout at mobile and desktop widths")
 
@@ -365,6 +373,10 @@ def _generate_basic_features(detection_result: StackDetectionResult) -> list[Det
     primary_frontend = detection_result.get("primary_frontend")
     primary_backend = detection_result.get("primary_backend")
 
+    # Normalize stack names to handle variants like react-vite, fastify, etc.
+    frontend_base = _get_base_stack(primary_frontend)
+    backend_base = _get_base_stack(primary_backend)
+
     # Application startup feature
     if primary_frontend or primary_backend:
         features.append({
@@ -382,8 +394,8 @@ def _generate_basic_features(detection_result: StackDetectionResult) -> list[Det
             "confidence": 1.0,
         })
 
-    # Frontend-specific features
-    if primary_frontend in ("react", "nextjs", "vue", "nuxt"):
+    # Frontend-specific features (handle variants like react-vite, vue-cli)
+    if frontend_base in ("react", "nextjs", "vue", "nuxt", "angular"):
         features.append({
             "category": "Infrastructure",
             "name": "No console errors on page load",
@@ -399,8 +411,9 @@ def _generate_basic_features(detection_result: StackDetectionResult) -> list[Det
             "confidence": 0.9,
         })
 
-    # Backend-specific features
-    if primary_backend in ("express", "fastapi", "django", "flask", "nestjs"):
+    # Backend-specific features (expanded list for all backend stacks)
+    if backend_base in ("express", "fastify", "koa", "nodejs", "node",
+                        "fastapi", "django", "flask", "nestjs", "python"):
         features.append({
             "category": "Infrastructure",
             "name": "Health check endpoint responds",
