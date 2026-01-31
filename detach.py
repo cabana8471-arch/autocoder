@@ -801,6 +801,26 @@ def restore_pre_reattach_backup(project_dir: Path) -> int:
     return files_restored
 
 
+def _checkpoint_databases(project_dir: Path) -> None:
+    """Checkpoint SQLite databases to merge WAL files into main database.
+
+    This ensures -wal and -shm files are empty/minimal before backup,
+    preventing them from being recreated during the detach operation.
+    """
+    import sqlite3
+
+    for db_name in ["features.db", "assistant.db"]:
+        db_file = project_dir / db_name
+        if db_file.exists():
+            try:
+                conn = sqlite3.connect(str(db_file))
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                conn.close()
+                logger.debug(f"Checkpointed {db_name}")
+            except Exception as e:
+                logger.warning(f"Failed to checkpoint {db_name}: {e}")
+
+
 def detach_project(
     name_or_path: str,
     force: bool = False,
@@ -874,6 +894,10 @@ def detach_project(
         files = existing_files if existing_files else get_autocoder_files(project_dir, include_artifacts)
         if not files:
             return False, "No Autocoder files found in project.", None, 0
+
+        # Checkpoint databases to merge WAL files before backup
+        if not dry_run:
+            _checkpoint_databases(project_dir)
 
         # Create backup
         manifest = create_backup(project_dir, project_name, files, dry_run)

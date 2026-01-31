@@ -81,6 +81,11 @@ export function useDetachProject() {
   return useMutation({
     mutationFn: (name: string) => api.detachProject(name),
     onSuccess: (_data, name) => {
+      // Clear features data immediately (prevents stale cache)
+      queryClient.setQueryData(['features', name], null)
+      queryClient.setQueryData(['dependencyGraph', name], null)
+
+      // Invalidate to refresh
       queryClient.invalidateQueries({ queryKey: ['projects'] })
       queryClient.invalidateQueries({ queryKey: ['project', name] })
       queryClient.invalidateQueries({ queryKey: ['features', name] })
@@ -105,12 +110,12 @@ export function useReattachProject() {
 // Features
 // ============================================================================
 
-export function useFeatures(projectName: string | null) {
+export function useFeatures(projectName: string | null, isDetached: boolean = false) {
   return useQuery({
     queryKey: ['features', projectName],
     queryFn: () => api.listFeatures(projectName!),
-    enabled: !!projectName,
-    refetchInterval: 5000, // Refetch every 5 seconds for real-time updates
+    enabled: !!projectName && !isDetached,
+    refetchInterval: isDetached ? false : 5000, // Refetch every 5 seconds for real-time updates
   })
 }
 
