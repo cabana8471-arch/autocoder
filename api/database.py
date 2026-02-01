@@ -184,7 +184,8 @@ class ScheduleOverride(Base):
 
 def get_database_path(project_dir: Path) -> Path:
     """Return the path to the SQLite database for a project."""
-    return project_dir / "features.db"
+    from autocoder_paths import get_features_db_path
+    return get_features_db_path(project_dir)
 
 
 def get_database_url(project_dir: Path) -> str:
@@ -360,7 +361,7 @@ def _configure_sqlite_immediate_transactions(engine) -> None:
         # This is safe because isolation_level=None means no implicit transactions
         cursor = dbapi_connection.cursor()
         try:
-            # These PRAGMAs need to run outside of any transaction
+            # Set busy_timeout on raw connection before any transactions
             cursor.execute("PRAGMA busy_timeout=30000")
         finally:
             cursor.close()
@@ -390,6 +391,10 @@ def create_database(project_dir: Path) -> tuple:
         return engine, SessionLocal
 
     db_url = get_database_url(project_dir)
+
+    # Ensure parent directory exists (for .autocoder/ layout)
+    db_path = get_database_path(project_dir)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Choose journal mode based on filesystem type
     # WAL mode doesn't work reliably on network filesystems and can cause corruption
@@ -482,6 +487,9 @@ def get_db() -> Generator[Session, None, None]:
     db = _session_maker()
     try:
         yield db
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 

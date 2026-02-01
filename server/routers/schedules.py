@@ -80,6 +80,9 @@ def _get_db_session(project_name: str) -> Generator[Tuple[Session, Path], None, 
     db = SessionLocal()
     try:
         yield db, project_path
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 

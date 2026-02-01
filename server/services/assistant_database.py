@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 class Base(DeclarativeBase):
-    """Base class for SQLAlchemy models."""
+    """SQLAlchemy 2.0 style declarative base."""
     pass
 
 # Engine cache to avoid creating new engines for each request
@@ -65,7 +65,8 @@ class ConversationMessage(Base):
 
 def get_db_path(project_dir: Path) -> Path:
     """Get the path to the assistant database for a project."""
-    return project_dir / "assistant.db"
+    from autocoder_paths import get_assistant_db_path
+    return get_assistant_db_path(project_dir)
 
 
 def get_engine(project_dir: Path):

@@ -197,6 +197,12 @@ def main() -> None:
             print("Use an absolute path or register the project first.")
             return
 
+    # Migrate project layout to .autocoder/ if needed (idempotent, safe)
+    from autocoder_paths import migrate_project_layout
+    migrated = migrate_project_layout(project_dir)
+    if migrated:
+        print(f"Migrated project files to .autocoder/: {', '.join(migrated)}", flush=True)
+
     # Initialize logger now that project_dir is resolved
     logger = get_logger(project_dir, agent_id="entry-point", console_output=False)
     logger.info(

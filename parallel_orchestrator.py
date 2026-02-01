@@ -513,16 +513,23 @@ class ParallelOrchestrator:
             cmd.append("--yolo")
 
         try:
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",  # Fix Windows CP1252 encoding issue (#138)
-                errors="replace",
-                cwd=str(AUTOCODER_ROOT),
-                env={**os.environ, "PYTHONUNBUFFERED": "1"},
-            )
+            # CREATE_NO_WINDOW on Windows prevents console window pop-ups
+            # stdin=DEVNULL prevents blocking on stdin reads
+            # encoding="utf-8" and errors="replace" fix Windows CP1252 issues
+            popen_kwargs = {
+                "stdin": subprocess.DEVNULL,
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.STDOUT,
+                "text": True,
+                "encoding": "utf-8",
+                "errors": "replace",
+                "cwd": str(AUTOCODER_ROOT),  # Run from autocoder root for proper imports
+                "env": {**os.environ, "PYTHONUNBUFFERED": "1"},
+            }
+            if sys.platform == "win32":
+                popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
+            proc = subprocess.Popen(cmd, **popen_kwargs)
         except Exception as e:
             # Reset in_progress on failure
             session = self.get_session()
@@ -598,16 +605,23 @@ class ParallelOrchestrator:
                 cmd.extend(["--model", self.model])
 
             try:
-                proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    encoding="utf-8",  # Fix Windows CP1252 encoding issue (#138)
-                    errors="replace",
-                    cwd=str(AUTOCODER_ROOT),
-                    env={**os.environ, "PYTHONUNBUFFERED": "1"},
-                )
+                # CREATE_NO_WINDOW on Windows prevents console window pop-ups
+                # stdin=DEVNULL prevents blocking on stdin reads
+                # encoding="utf-8" and errors="replace" fix Windows CP1252 issues
+                popen_kwargs = {
+                    "stdin": subprocess.DEVNULL,
+                    "stdout": subprocess.PIPE,
+                    "stderr": subprocess.STDOUT,
+                    "text": True,
+                    "encoding": "utf-8",
+                    "errors": "replace",
+                    "cwd": str(AUTOCODER_ROOT),
+                    "env": {**os.environ, "PYTHONUNBUFFERED": "1"},
+                }
+                if sys.platform == "win32":
+                    popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
+                proc = subprocess.Popen(cmd, **popen_kwargs)
             except Exception as e:
                 debug_log.log("TESTING", f"FAILED to spawn testing agent: {e}")
                 return False, f"Failed to start testing agent: {e}"
@@ -651,16 +665,23 @@ class ParallelOrchestrator:
 
         print("Running initializer agent...", flush=True)
 
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",  # Fix Windows CP1252 encoding issue (#138)
-            errors="replace",
-            cwd=str(AUTOCODER_ROOT),
-            env={**os.environ, "PYTHONUNBUFFERED": "1"},
-        )
+        # CREATE_NO_WINDOW on Windows prevents console window pop-ups
+        # stdin=DEVNULL prevents blocking on stdin reads
+        # encoding="utf-8" and errors="replace" fix Windows CP1252 issues
+        popen_kwargs = {
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.STDOUT,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
+            "cwd": str(AUTOCODER_ROOT),
+            "env": {**os.environ, "PYTHONUNBUFFERED": "1"},
+        }
+        if sys.platform == "win32":
+            popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
+        proc = subprocess.Popen(cmd, **popen_kwargs)
 
         debug_log.log("INIT", "Initializer subprocess started", pid=proc.pid)
 
@@ -673,7 +694,7 @@ class ParallelOrchestrator:
                     if not line:
                         break
                     print(line.rstrip(), flush=True)
-                    if self.on_output:
+                    if self.on_output is not None:
                         self.on_output(0, line.rstrip())  # Use 0 as feature_id for initializer
                 proc.wait()
 
@@ -804,6 +825,9 @@ class ParallelOrchestrator:
             # Signal main loop that an agent slot is available
             self._signal_agent_completed()
             return
+
+        # feature_id is required for coding agents (always passed from start_feature)
+        assert feature_id is not None, "feature_id must not be None for coding agents"
 
         # Coding agent completion
         # feature_id is required for coding agents (always passed from start_feature)
@@ -1232,8 +1256,9 @@ async def run_parallel_orchestrator(
         # The finally block and atexit handler will perform cleanup
 
     # Register SIGTERM handler for process termination signals
-    # Note: On Windows, SIGTERM works but subprocess termination behavior differs.
-    # Windows uses CTRL_C_EVENT/CTRL_BREAK_EVENT instead of Unix signals.
+    # Note: On Windows, SIGTERM handlers only fire from os.kill() calls within Python.
+    # External termination (Task Manager, taskkill, Popen.terminate()) uses
+    # TerminateProcess() which bypasses signal handlers entirely.
     # The kill_process_tree() in process_utils.py handles this via psutil.
     signal.signal(signal.SIGTERM, signal_handler)
 

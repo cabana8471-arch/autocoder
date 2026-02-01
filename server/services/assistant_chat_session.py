@@ -76,7 +76,8 @@ def get_system_prompt(project_name: str, project_dir: Path) -> str:
     """Generate the system prompt for the assistant with project context."""
     # Try to load app_spec.txt for context
     app_spec_content = ""
-    app_spec_path = project_dir / "prompts" / "app_spec.txt"
+    from autocoder_paths import get_prompts_dir
+    app_spec_path = get_prompts_dir(project_dir) / "app_spec.txt"
     if app_spec_path.exists():
         try:
             app_spec_content = app_spec_path.read_text(encoding="utf-8")
@@ -89,6 +90,8 @@ def get_system_prompt(project_name: str, project_dir: Path) -> str:
     return f"""You are a helpful project assistant and backlog manager for the "{project_name}" project.
 
 Your role is to help users understand the codebase, answer questions about features, and manage the project backlog. You can READ files and CREATE/MANAGE features, but you cannot modify source code.
+
+You have MCP tools available for feature management. Use them directly by calling the tool -- do not suggest CLI commands, bash commands, or curl commands to the user. You can create features yourself using the feature_create and feature_create_bulk tools.
 
 ## What You CAN Do
 
@@ -134,17 +137,21 @@ If the user asks you to modify code, explain that you're a project assistant and
 
 ## Creating Features
 
-When a user asks to add a feature, gather the following information:
-1. **Category**: A grouping like "Authentication", "API", "UI", "Database"
-2. **Name**: A concise, descriptive name
-3. **Description**: What the feature should do
-4. **Steps**: How to verify/implement the feature (as a list)
+When a user asks to add a feature, use the `feature_create` or `feature_create_bulk` MCP tools directly:
+
+For a **single feature**, call `feature_create` with:
+- category: A grouping like "Authentication", "API", "UI", "Database"
+- name: A concise, descriptive name
+- description: What the feature should do
+- steps: List of verification/implementation steps
+
+For **multiple features**, call `feature_create_bulk` with an array of feature objects.
 
 You can ask clarifying questions if the user's request is vague, or make reasonable assumptions for simple requests.
 
 **Example interaction:**
 User: "Add a feature for S3 sync"
-You: I'll create that feature. Let me add it to the backlog...
+You: I'll create that feature now.
 [calls feature_create with appropriate parameters]
 You: Done! I've added "S3 Sync Integration" to your backlog. It's now visible on the kanban board.
 
@@ -230,7 +237,9 @@ class AssistantChatSession:
                 "allow": permissions_list,
             },
         }
-        settings_file = self.project_dir / ".claude_assistant_settings.json"
+        from autocoder_paths import get_claude_assistant_settings_path
+        settings_file = get_claude_assistant_settings_path(self.project_dir)
+        settings_file.parent.mkdir(parents=True, exist_ok=True)
         with open(settings_file, "w") as f:
             json.dump(security_settings, f, indent=2)
 

@@ -28,7 +28,7 @@ import { KeyboardShortcutsHelp } from './components/KeyboardShortcutsHelp'
 import { ThemeSelector } from './components/ThemeSelector'
 import { ResetProjectModal } from './components/ResetProjectModal'
 import { ProjectSetupRequired } from './components/ProjectSetupRequired'
-import { getDependencyGraph } from './lib/api'
+import { getDependencyGraph, startAgent } from './lib/api'
 import { Loader2, Settings, Moon, Sun, RotateCcw } from 'lucide-react'
 import type { Feature } from './lib/types'
 import { Button } from '@/components/ui/button'
@@ -40,6 +40,8 @@ const VIEW_MODE_KEY = 'autocoder-view-mode'
 
 // Bottom padding for main content when debug panel is collapsed (40px header + 8px margin)
 const COLLAPSED_DEBUG_PANEL_CLEARANCE = 48
+
+type InitializerStatus = 'idle' | 'starting' | 'error'
 
 function App() {
   // Initialize selected project from localStorage
@@ -63,6 +65,8 @@ function App() {
   const [isSpecCreating, setIsSpecCreating] = useState(false)
   const [showResetModal, setShowResetModal] = useState(false)
   const [showSpecChat, setShowSpecChat] = useState(false)  // For "Create Spec" button in empty kanban
+  const [specInitializerStatus, setSpecInitializerStatus] = useState<InitializerStatus>('idle')
+  const [specInitializerError, setSpecInitializerError] = useState<string | null>(null)
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
     try {
       const stored = localStorage.getItem(VIEW_MODE_KEY)
@@ -500,14 +504,31 @@ function App() {
         <div className="fixed inset-0 z-50 bg-background">
           <SpecCreationChat
             projectName={selectedProject}
-            onComplete={() => {
-              setShowSpecChat(false)
-              // Refresh projects to update has_spec
-              queryClient.invalidateQueries({ queryKey: ['projects'] })
-              queryClient.invalidateQueries({ queryKey: ['features', selectedProject] })
+            onComplete={async (_specPath, yoloMode) => {
+              setSpecInitializerStatus('starting')
+              try {
+                await startAgent(selectedProject, {
+                  yoloMode: yoloMode ?? false,
+                  maxConcurrency: 3,
+                })
+                // Success — close chat and refresh
+                setShowSpecChat(false)
+                setSpecInitializerStatus('idle')
+                queryClient.invalidateQueries({ queryKey: ['projects'] })
+                queryClient.invalidateQueries({ queryKey: ['features', selectedProject] })
+              } catch (err) {
+                setSpecInitializerStatus('error')
+                setSpecInitializerError(err instanceof Error ? err.message : 'Failed to start agent')
+              }
             }}
-            onCancel={() => setShowSpecChat(false)}
-            onExitToProject={() => setShowSpecChat(false)}
+            onCancel={() => { setShowSpecChat(false); setSpecInitializerStatus('idle') }}
+            onExitToProject={() => { setShowSpecChat(false); setSpecInitializerStatus('idle') }}
+            initializerStatus={specInitializerStatus}
+            initializerError={specInitializerError}
+            onRetryInitializer={() => {
+              setSpecInitializerError(null)
+              setSpecInitializerStatus('idle')
+            }}
           />
         </div>
       )}

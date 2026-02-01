@@ -18,7 +18,7 @@ RATE_LIMIT_REGEX_PATTERNS = [
     r"\bstatus\s*429\b",          # "status 429", "status429"
     r"\berror\s*429\b",           # "error 429", "error429"
     r"\b429\s+too\s+many",        # "429 too many"
-    r"\boverloaded\b",            # "overloaded"
+    r"\b(?:server|api|system)\s+(?:is\s+)?overloaded\b",  # "server is overloaded", "api overloaded"
     r"\bquota\s*exceeded\b",      # "quota exceeded"
 ]
 

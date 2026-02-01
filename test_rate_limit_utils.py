@@ -43,6 +43,11 @@ class TestParseRetryAfter(unittest.TestCase):
         assert parse_retry_after("60 seconds left") == 60
         assert parse_retry_after("120 seconds until reset") == 120
 
+    def test_retry_after_zero(self):
+        """Test 'Retry-After: 0' returns 0 (not None)."""
+        assert parse_retry_after("Retry-After: 0") == 0
+        assert parse_retry_after("retry after 0 seconds") == 0
+
     def test_no_match(self):
         """Test messages that don't contain retry-after info."""
         assert parse_retry_after("no match here") is None
@@ -140,6 +145,17 @@ class TestFalsePositives(unittest.TestCase):
         # These would fail if "limit reached" pattern still exists
         assert is_rate_limit_error("File size limit reached") is False
         assert is_rate_limit_error("Memory limit reached, consider optimization") is False
+
+    def test_overloaded_in_programming_context(self):
+        """Method/operator overloading discussions should not trigger."""
+        assert is_rate_limit_error("I will create an overloaded constructor") is False
+        assert is_rate_limit_error("The + operator is overloaded") is False
+        assert is_rate_limit_error("Here is the overloaded version of the function") is False
+        assert is_rate_limit_error("The method is overloaded to accept different types") is False
+        # But actual API overload messages should still match
+        assert is_rate_limit_error("Server is overloaded") is True
+        assert is_rate_limit_error("API overloaded") is True
+        assert is_rate_limit_error("system is overloaded") is True
 
 
 class TestBackoffFunctions(unittest.TestCase):

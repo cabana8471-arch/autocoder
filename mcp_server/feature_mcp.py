@@ -326,11 +326,11 @@ def feature_mark_passing(
         """), {"id": feature_id})
         session.commit()
 
-        result = {"success": True, "feature_id": feature_id, "name": name}
+        result_dict = {"success": True, "feature_id": feature_id, "name": name}
         if quality_result:
-            result["quality_result"] = quality_result
+            result_dict["quality_result"] = quality_result
 
-        return json.dumps(result)
+        return json.dumps(result_dict)
     except Exception as e:
         session.rollback()
         return json.dumps({"error": f"Failed to mark feature passing: {str(e)}"})
