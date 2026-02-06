@@ -162,11 +162,20 @@ class TestBackoffFunctions(unittest.TestCase):
     """Test backoff calculation functions from rate_limit_utils."""
 
     def test_rate_limit_backoff_sequence(self):
-        """Test that rate limit backoff follows expected exponential sequence."""
-        expected = [60, 120, 240, 480, 960, 1920, 3600, 3600]  # Caps at 3600
-        for retries, expected_delay in enumerate(expected):
+        """Test that rate limit backoff follows expected exponential sequence with jitter.
+
+        Base formula: 15 * 2^retries with 0-30% jitter.
+        Base values: 15, 30, 60, 120, 240, 480, 960, 1920, 3600, 3600
+        With jitter the result should be in [base, base * 1.3].
+        """
+        base_values = [15, 30, 60, 120, 240, 480, 960, 1920, 3600, 3600]
+        for retries, base in enumerate(base_values):
             delay = calculate_rate_limit_backoff(retries)
-            assert delay == expected_delay, f"Retry {retries}: expected {expected_delay}, got {delay}"
+            # Delay must be at least the base value (jitter is non-negative)
+            assert delay >= base, f"Retry {retries}: {delay} < base {base}"
+            # Delay must not exceed base + 30% jitter (int truncation means <= base * 1.3)
+            max_with_jitter = int(base * 1.3)
+            assert delay <= max_with_jitter, f"Retry {retries}: {delay} > max {max_with_jitter}"
 
     def test_error_backoff_sequence(self):
         """Test that error backoff follows expected linear sequence."""

@@ -22,21 +22,12 @@ from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 from dotenv import load_dotenv
 
 from ..schemas import ImageAttachment
+from .chat_constants import ROOT_DIR, make_multimodal_message
 
 # Load environment variables from .env file if present
 load_dotenv()
 
 logger = logging.getLogger(__name__)
-
-# Environment variables to pass through to Claude CLI for API configuration
-API_ENV_VARS = [
-    "ANTHROPIC_BASE_URL",
-    "ANTHROPIC_AUTH_TOKEN",
-    "API_TIMEOUT_MS",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-]
 
 # Feature MCP tools needed for expand session
 EXPAND_FEATURE_TOOLS = [
@@ -44,22 +35,6 @@ EXPAND_FEATURE_TOOLS = [
     "mcp__features__feature_create_bulk",
     "mcp__features__feature_get_stats",
 ]
-
-
-async def _make_multimodal_message(content_blocks: list[dict]) -> AsyncGenerator[dict, None]:
-    """
-    Create an async generator that yields a properly formatted multimodal message.
-    """
-    yield {
-        "type": "user",
-        "message": {"role": "user", "content": content_blocks},
-        "parent_tool_use_id": None,
-        "session_id": "default",
-    }
-
-
-# Root directory of the project
-ROOT_DIR = Path(__file__).parent.parent.parent
 
 
 class ExpandChatSession:
@@ -128,7 +103,7 @@ class ExpandChatSession:
             return
 
         # Verify project has existing spec
-        from autocoder_paths import get_prompts_dir
+        from autoforge_paths import get_prompts_dir
         spec_path = get_prompts_dir(self.project_dir) / "app_spec.txt"
         if not spec_path.exists():
             yield {
@@ -167,7 +142,7 @@ class ExpandChatSession:
                 ],
             },
         }
-        from autocoder_paths import get_expand_settings_path
+        from autoforge_paths import get_expand_settings_path
         settings_file = get_expand_settings_path(self.project_dir, uuid.uuid4().hex)
         settings_file.parent.mkdir(parents=True, exist_ok=True)
         self._settings_file = settings_file
@@ -179,15 +154,11 @@ class ExpandChatSession:
         system_prompt = skill_content.replace("$ARGUMENTS", project_path)
 
         # Build environment overrides for API configuration
-        # Filter out None values for type safety
-        sdk_env: dict[str, str] = {
-            var: val for var in API_ENV_VARS
-            if (val := os.getenv(var)) is not None
-        }
+        from registry import DEFAULT_MODEL, get_effective_sdk_env
+        sdk_env = get_effective_sdk_env()
 
-        # Determine model from environment or use default
-        # This allows using alternative APIs (e.g., GLM via z.ai) that may not support Claude model names
-        model = os.getenv("ANTHROPIC_DEFAULT_OPUS_MODEL", "claude-opus-4-5-20251101")
+        # Determine model from SDK env (provider-aware) or fallback to env/default
+        model = sdk_env.get("ANTHROPIC_DEFAULT_OPUS_MODEL") or os.getenv("ANTHROPIC_DEFAULT_OPUS_MODEL", DEFAULT_MODEL)
 
         # Build MCP servers config for feature creation
         mcp_servers = {
@@ -211,9 +182,12 @@ class ExpandChatSession:
                     allowed_tools=[
                         "Read",
                         "Glob",
+                        "Grep",
+                        "WebFetch",
+                        "WebSearch",
                         *EXPAND_FEATURE_TOOLS,
                     ],
-                    mcp_servers=mcp_servers,  # type: ignore[arg-type]
+                    mcp_servers=mcp_servers,  # type: ignore[arg-type]  # SDK accepts dict config at runtime
                     permission_mode="bypassPermissions",
                     max_turns=100,
                     cwd=str(self.project_dir.resolve()),
@@ -307,21 +281,19 @@ class ExpandChatSession:
 
         # Build the message content
         if attachments and len(attachments) > 0:
-            content_blocks = []
+            content_blocks: list[dict[str, Any]] = []
             if message:
                 content_blocks.append({"type": "text", "text": message})
             for att in attachments:
-                # Build the image block - using Any for nested dict structure
-                image_block: dict[str, Any] = {
+                content_blocks.append({
                     "type": "image",
                     "source": {
                         "type": "base64",
                         "media_type": att.mimeType,
                         "data": att.base64Data,
                     }
-                }
-                content_blocks.append(image_block)
-            await self.client.query(_make_multimodal_message(content_blocks))
+                })
+            await self.client.query(make_multimodal_message(content_blocks))
             logger.info(f"Sent multimodal message with {len(attachments)} image(s)")
         else:
             await self.client.query(message)

@@ -6,17 +6,13 @@ API endpoints for managing agent schedules.
 Provides CRUD operations for time-based schedule configuration.
 """
 
-import re
-import sys
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Generator, Tuple
+from typing import TYPE_CHECKING, Generator, Tuple
 
 from fastapi import APIRouter, HTTPException
 from sqlalchemy.orm import Session
-
-from ..dependencies import validate_project_not_detached
 
 # Schedule limits to prevent resource exhaustion
 MAX_SCHEDULES_PER_PROJECT = 50
@@ -28,32 +24,26 @@ from ..schemas import (
     ScheduleResponse,
     ScheduleUpdate,
 )
+from ..utils.project_helpers import get_project_path as _get_project_path
+from ..utils.validation import validate_project_name
+
+if TYPE_CHECKING:
+    from api.database import Schedule as ScheduleModel
 
 
-def _get_project_path(project_name: str) -> Path | None:
-    """Get project path from registry."""
-    root = Path(__file__).parent.parent.parent
-    if str(root) not in sys.path:
-        sys.path.insert(0, str(root))
+def _schedule_to_response(schedule: "ScheduleModel") -> ScheduleResponse:
+    """Convert a Schedule ORM object to a ScheduleResponse Pydantic model.
 
-    from registry import get_project_path
-    return get_project_path(project_name)
-
+    SQLAlchemy Column descriptors resolve to Python types at instance access time,
+    but mypy sees the Column[T] descriptor type. Using model_validate with
+    from_attributes handles this conversion correctly.
+    """
+    return ScheduleResponse.model_validate(schedule, from_attributes=True)
 
 router = APIRouter(
     prefix="/api/projects/{project_name}/schedules",
     tags=["schedules"]
 )
-
-
-def validate_project_name(name: str) -> str:
-    """Validate and sanitize project name to prevent path traversal."""
-    if not re.match(r'^[a-zA-Z0-9_-]{1,50}$', name):
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid project name"
-        )
-    return name
 
 
 @contextmanager
@@ -64,17 +54,23 @@ def _get_db_session(project_name: str) -> Generator[Tuple[Session, Path], None, 
         with _get_db_session(project_name) as (db, project_path):
             # ... use db ...
         # db is automatically closed
-
-    Raises:
-        HTTPException 404: If project not found
-        HTTPException 409: If project is detached
     """
     from api.database import create_database
 
     project_name = validate_project_name(project_name)
+    project_path = _get_project_path(project_name)
 
-    # Check detach status before accessing database
-    project_path = validate_project_not_detached(project_name)
+    if not project_path:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Project '{project_name}' not found in registry"
+        )
+
+    if not project_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Project directory not found: {project_path}"
+        )
 
     _, SessionLocal = create_database(project_path)
     db = SessionLocal()
@@ -98,10 +94,7 @@ async def list_schedules(project_name: str):
         ).order_by(Schedule.start_time).all()
 
         return ScheduleListResponse(
-            schedules=[
-                ScheduleResponse.model_validate(s)
-                for s in schedules
-            ]
+            schedules=[_schedule_to_response(s) for s in schedules]
         )
 
 
@@ -175,7 +168,7 @@ async def create_schedule(project_name: str, data: ScheduleCreate):
                     except Exception as e:
                         logger.error(f"Failed to start agent for schedule {schedule.id}: {e}", exc_info=True)
 
-        return ScheduleResponse.model_validate(schedule)
+        return _schedule_to_response(schedule)
 
 
 @router.get("/next", response_model=NextRunResponse)
@@ -233,7 +226,7 @@ async def get_next_scheduled_run(project_name: str):
 
         return NextRunResponse(
             has_schedules=True,
-            next_start=next_start if (active_count == 0 and next_start) else None,
+            next_start=next_start if active_count == 0 else None,
             next_end=latest_end,
             is_currently_running=active_count > 0,
             active_schedule_count=active_count,
@@ -254,7 +247,7 @@ async def get_schedule(project_name: str, schedule_id: int):
         if not schedule:
             raise HTTPException(status_code=404, detail="Schedule not found")
 
-        return ScheduleResponse.model_validate(schedule)
+        return _schedule_to_response(schedule)
 
 
 @router.patch("/{schedule_id}", response_model=ScheduleResponse)
@@ -297,7 +290,7 @@ async def update_schedule(
             # Was enabled, now disabled - remove jobs
             scheduler.remove_schedule(schedule_id)
 
-        return ScheduleResponse.model_validate(schedule)
+        return _schedule_to_response(schedule)
 
 
 @router.delete("/{schedule_id}", status_code=204)

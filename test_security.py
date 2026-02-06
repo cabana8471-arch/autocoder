@@ -273,11 +273,11 @@ def test_yaml_loading():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         project_dir = Path(tmpdir)
-        autocoder_dir = project_dir / ".autocoder"
-        autocoder_dir.mkdir()
+        autoforge_dir = project_dir / ".autoforge"
+        autoforge_dir.mkdir()
 
         # Test 1: Valid YAML
-        config_path = autocoder_dir / "allowed_commands.yaml"
+        config_path = autoforge_dir / "allowed_commands.yaml"
         config_path.write_text("""version: 1
 commands:
   - name: swift
@@ -297,7 +297,7 @@ commands:
             failed += 1
 
         # Test 2: Missing file returns None
-        (project_dir / ".autocoder" / "allowed_commands.yaml").unlink()
+        (project_dir / ".autoforge" / "allowed_commands.yaml").unlink()
         config = load_project_commands(project_dir)
         if config is None:
             print("  PASS: Missing file returns None")
@@ -407,11 +407,11 @@ def test_project_commands():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         project_dir = Path(tmpdir)
-        autocoder_dir = project_dir / ".autocoder"
-        autocoder_dir.mkdir()
+        autoforge_dir = project_dir / ".autoforge"
+        autoforge_dir.mkdir()
 
         # Create a config with Swift commands
-        config_path = autocoder_dir / "allowed_commands.yaml"
+        config_path = autoforge_dir / "allowed_commands.yaml"
         config_path.write_text("""version: 1
 commands:
   - name: swift
@@ -482,7 +482,7 @@ def test_org_config_loading():
     with tempfile.TemporaryDirectory() as tmpdir:
         # Use temporary_home for cross-platform compatibility
         with temporary_home(tmpdir):
-            org_dir = Path(tmpdir) / ".autocoder"
+            org_dir = Path(tmpdir) / ".autoforge"
             org_dir.mkdir()
             org_config_path = org_dir / "config.yaml"
 
@@ -576,7 +576,7 @@ def test_hierarchy_resolution():
         with tempfile.TemporaryDirectory() as tmpproject:
             # Use temporary_home for cross-platform compatibility
             with temporary_home(tmphome):
-                org_dir = Path(tmphome) / ".autocoder"
+                org_dir = Path(tmphome) / ".autoforge"
                 org_dir.mkdir()
                 org_config_path = org_dir / "config.yaml"
 
@@ -593,9 +593,9 @@ blocked_commands:
 """)
 
                 project_dir = Path(tmpproject)
-                project_autocoder = project_dir / ".autocoder"
-                project_autocoder.mkdir()
-                project_config = project_autocoder / "allowed_commands.yaml"
+                project_autoforge = project_dir / ".autoforge"
+                project_autoforge.mkdir()
+                project_config = project_autoforge / "allowed_commands.yaml"
 
                 # Create project config
                 project_config.write_text("""version: 1
@@ -660,7 +660,7 @@ def test_org_blocklist_enforcement():
         with tempfile.TemporaryDirectory() as tmpproject:
             # Use temporary_home for cross-platform compatibility
             with temporary_home(tmphome):
-                org_dir = Path(tmphome) / ".autocoder"
+                org_dir = Path(tmphome) / ".autoforge"
                 org_dir.mkdir()
                 org_config_path = org_dir / "config.yaml"
 
@@ -671,8 +671,8 @@ blocked_commands:
 """)
 
                 project_dir = Path(tmpproject)
-                project_autocoder = project_dir / ".autocoder"
-                project_autocoder.mkdir()
+                project_autoforge = project_dir / ".autoforge"
+                project_autoforge.mkdir()
 
                 # Try to use terraform (should be blocked)
                 input_data = {"tool_name": "Bash", "tool_input": {"command": "terraform apply"}}
@@ -735,7 +735,7 @@ def test_pkill_extensibility():
     with tempfile.TemporaryDirectory() as tmphome:
         with tempfile.TemporaryDirectory() as tmpproject:
             with temporary_home(tmphome):
-                org_dir = Path(tmphome) / ".autocoder"
+                org_dir = Path(tmphome) / ".autoforge"
                 org_dir.mkdir()
                 org_config_path = org_dir / "config.yaml"
 
@@ -762,9 +762,9 @@ pkill_processes:
         with tempfile.TemporaryDirectory() as tmpproject:
             with temporary_home(tmphome):
                 project_dir = Path(tmpproject)
-                project_autocoder = project_dir / ".autocoder"
-                project_autocoder.mkdir()
-                project_config = project_autocoder / "allowed_commands.yaml"
+                project_autoforge = project_dir / ".autoforge"
+                project_autoforge.mkdir()
+                project_config = project_autoforge / "allowed_commands.yaml"
 
                 # Create project config with extra pkill processes
                 project_config.write_text("""version: 1
@@ -804,7 +804,7 @@ pkill_processes:
     with tempfile.TemporaryDirectory() as tmphome:
         with tempfile.TemporaryDirectory() as tmpproject:
             with temporary_home(tmphome):
-                org_dir = Path(tmphome) / ".autocoder"
+                org_dir = Path(tmphome) / ".autoforge"
                 org_dir.mkdir()
                 org_config_path = org_dir / "config.yaml"
 
@@ -829,7 +829,7 @@ pkill_processes:
     with tempfile.TemporaryDirectory() as tmphome:
         with tempfile.TemporaryDirectory() as tmpproject:
             with temporary_home(tmphome):
-                org_dir = Path(tmphome) / ".autocoder"
+                org_dir = Path(tmphome) / ".autoforge"
                 org_dir.mkdir()
                 org_config_path = org_dir / "config.yaml"
 
@@ -851,7 +851,7 @@ pkill_processes:
     with tempfile.TemporaryDirectory() as tmphome:
         with tempfile.TemporaryDirectory() as tmpproject:
             with temporary_home(tmphome):
-                org_dir = Path(tmphome) / ".autocoder"
+                org_dir = Path(tmphome) / ".autoforge"
                 org_dir.mkdir()
                 org_config_path = org_dir / "config.yaml"
 
@@ -875,7 +875,7 @@ pkill_processes:
     with tempfile.TemporaryDirectory() as tmphome:
         with tempfile.TemporaryDirectory() as tmpproject:
             with temporary_home(tmphome):
-                org_dir = Path(tmphome) / ".autocoder"
+                org_dir = Path(tmphome) / ".autoforge"
                 org_dir.mkdir()
                 org_config_path = org_dir / "config.yaml"
 
@@ -992,31 +992,26 @@ def main():
     failed += pkill_failed
 
     # Commands that SHOULD be blocked
+    # Note: blocklisted commands (sudo, shutdown, dd, aws) are tested in
+    # test_blocklist_enforcement(). chmod validation is tested in
+    # test_validate_chmod(). init.sh validation is tested in
+    # test_validate_init_script(). pkill validation is tested in
+    # test_pkill_extensibility(). The entries below focus on scenarios
+    # NOT covered by those dedicated tests.
     print("\nCommands that should be BLOCKED:\n")
     dangerous = [
         # Not in allowlist - dangerous system commands
-        "shutdown now",
         "reboot",
-        "dd if=/dev/zero of=/dev/sda",
         # Not in allowlist - common commands excluded from minimal set
         "wget https://example.com",
         "python app.py",
         "killall node",
-        # pkill with non-dev processes
+        # pkill with non-dev processes (pkill python tested in test_pkill_extensibility)
         "pkill bash",
         "pkill chrome",
-        "pkill python",
         # Shell injection attempts
         "$(echo pkill) node",
         'eval "pkill node"',
-        # chmod with disallowed modes
-        "chmod 777 file.sh",
-        "chmod 755 file.sh",
-        "chmod +w file.sh",
-        "chmod -R +x dir/",
-        # Non-init.sh scripts
-        "./setup.sh",
-        "./malicious.sh",
     ]
 
     for cmd in dangerous:
@@ -1026,6 +1021,10 @@ def main():
             failed += 1
 
     # Commands that SHOULD be allowed
+    # Note: chmod +x variants are tested in test_validate_chmod().
+    # init.sh variants are tested in test_validate_init_script().
+    # The combined "chmod +x init.sh && ./init.sh" below serves as the
+    # integration test verifying the hook routes to both validators correctly.
     print("\nCommands that should be ALLOWED:\n")
     safe = [
         # File inspection
@@ -1076,16 +1075,7 @@ def main():
         "ls | grep test",
         # Full paths
         "/usr/local/bin/node app.js",
-        # chmod +x (allowed)
-        "chmod +x init.sh",
-        "chmod +x script.sh",
-        "chmod u+x init.sh",
-        "chmod a+x init.sh",
-        # init.sh execution (allowed)
-        "./init.sh",
-        "./init.sh --production",
-        "/path/to/init.sh",
-        # Combined chmod and init.sh
+        # Combined chmod and init.sh (integration test for both validators)
         "chmod +x init.sh && ./init.sh",
     ]
 

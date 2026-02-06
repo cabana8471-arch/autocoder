@@ -7,6 +7,7 @@ Provides REST API, WebSocket, and static file serving.
 """
 
 import asyncio
+import logging
 import os
 import shutil
 import sys
@@ -52,6 +53,7 @@ from .routers import (
 )
 from .schemas import SetupStatus
 from .services.assistant_chat_session import cleanup_all_sessions as cleanup_assistant_sessions
+from .services.chat_constants import ROOT_DIR
 from .services.dev_server_manager import (
     cleanup_all_devservers,
     cleanup_orphaned_devserver_locks,
@@ -63,7 +65,6 @@ from .services.terminal_manager import cleanup_all_terminals
 from .websocket import project_websocket
 
 # Paths
-ROOT_DIR = Path(__file__).parent.parent
 UI_DIST_DIR = ROOT_DIR / "ui" / "dist"
 
 
@@ -98,9 +99,18 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Module logger
+logger = logging.getLogger(__name__)
+
 # Check if remote access is enabled via environment variable
 # Set by start_ui.py when --host is not 127.0.0.1
-ALLOW_REMOTE = os.environ.get("AUTOCODER_ALLOW_REMOTE", "").lower() in ("1", "true", "yes")
+ALLOW_REMOTE = os.environ.get("AUTOFORGE_ALLOW_REMOTE", "").lower() in ("1", "true", "yes")
+
+if ALLOW_REMOTE:
+    logger.warning(
+        "ALLOW_REMOTE is enabled. Terminal WebSocket is exposed without sandboxing. "
+        "Only use this in trusted network environments."
+    )
 
 # CORS - allow all origins when remote access is enabled, otherwise localhost only
 if ALLOW_REMOTE:
@@ -133,7 +143,7 @@ else:
 if not ALLOW_REMOTE:
     @app.middleware("http")
     async def require_localhost(request: Request, call_next):
-        """Only allow requests from localhost (disabled when AUTOCODER_ALLOW_REMOTE=1)."""
+        """Only allow requests from localhost (disabled when AUTOFORGE_ALLOW_REMOTE=1)."""
         client_host = request.client.host if request.client else None
 
         # Allow localhost connections

@@ -7,7 +7,6 @@ Core agent interaction functions for running autonomous coding sessions.
 
 import asyncio
 import io
-import os
 import re
 import sys
 from datetime import datetime, timedelta
@@ -17,8 +16,6 @@ from zoneinfo import ZoneInfo
 
 from claude_agent_sdk import ClaudeSDKClient
 
-from structured_logging import get_logger
-
 # Fix Windows console encoding for Unicode characters (emoji, etc.)
 # Without this, print() crashes when Claude outputs emoji like ✅
 if sys.platform == "win32":
@@ -27,7 +24,6 @@ if sys.platform == "win32":
 
 from client import create_client
 from progress import (
-    clear_stuck_features,
     count_passing_tests,
     has_features,
     print_progress_summary,
@@ -35,6 +31,7 @@ from progress import (
 )
 from prompts import (
     copy_spec_to_project,
+    get_batch_feature_prompt,
     get_coding_prompt,
     get_initializer_prompt,
     get_single_feature_prompt,
@@ -56,7 +53,6 @@ async def run_agent_session(
     client: ClaudeSDKClient,
     message: str,
     project_dir: Path,
-    logger=None,
 ) -> tuple[str, str]:
     """
     Run a single agent session using Claude Agent SDK.
@@ -65,7 +61,6 @@ async def run_agent_session(
         client: Claude SDK client
         message: The prompt to send
         project_dir: Project directory path
-        logger: Optional structured logger for this session
 
     Returns:
         (status, response_text) where status is:
@@ -73,8 +68,6 @@ async def run_agent_session(
         - "error" if an error occurred
     """
     print("Sending prompt to Claude Agent SDK...\n")
-    if logger:
-        logger.info("Starting agent session", prompt_length=len(message))
 
     try:
         # Send the query
@@ -101,8 +94,6 @@ async def run_agent_session(
                                 print(f"   Input: {input_str[:200]}...", flush=True)
                             else:
                                 print(f"   Input: {input_str}", flush=True)
-                        if logger:
-                            logger.debug("Tool used", tool_name=block.name, input_size=len(str(getattr(block, "input", ""))))
 
             # Handle UserMessage (tool results)
             elif msg_type == "UserMessage" and hasattr(msg, "content"):
@@ -116,35 +107,25 @@ async def run_agent_session(
                         # Check if command was blocked by security hook
                         if "blocked" in str(result_content).lower():
                             print(f"   [BLOCKED] {result_content}", flush=True)
-                            if logger:
-                                logger.error("Security: command blocked", content=str(result_content)[:200])
                         elif is_error:
                             # Show errors (truncated)
                             error_str = str(result_content)[:500]
                             print(f"   [Error] {error_str}", flush=True)
-                            if logger:
-                                logger.error("Tool execution error", error=error_str[:200])
                         else:
                             # Tool succeeded - just show brief confirmation
                             print("   [Done]", flush=True)
 
         print("\n" + "-" * 70 + "\n")
-        if logger:
-            logger.info("Agent session completed", response_length=len(response_text))
         return "continue", response_text
 
     except Exception as e:
         error_str = str(e)
         print(f"Error during agent session: {error_str}")
-        if logger:
-            logger.error("Agent session error", error_type=type(e).__name__, message=error_str[:200])
 
         # Detect rate limit errors from exception message
         if is_rate_limit_error(error_str):
             # Try to extract retry-after time from error
             retry_seconds = parse_retry_after(error_str)
-            if logger:
-                logger.warning("Rate limit detected", retry_seconds=retry_seconds)
             if retry_seconds is not None:
                 return "rate_limit", str(retry_seconds)
             else:
@@ -159,8 +140,10 @@ async def run_autonomous_agent(
     max_iterations: Optional[int] = None,
     yolo_mode: bool = False,
     feature_id: Optional[int] = None,
+    feature_ids: Optional[list[int]] = None,
     agent_type: Optional[str] = None,
     testing_feature_id: Optional[int] = None,
+    testing_feature_ids: Optional[list[int]] = None,
 ) -> None:
     """
     Run the autonomous agent loop.
@@ -171,30 +154,11 @@ async def run_autonomous_agent(
         max_iterations: Maximum number of iterations (None for unlimited)
         yolo_mode: If True, skip browser testing in coding agent prompts
         feature_id: If set, work only on this specific feature (used by orchestrator for coding agents)
+        feature_ids: If set, work on these features in batch (used by orchestrator for batch mode)
         agent_type: Type of agent: "initializer", "coding", "testing", or None (auto-detect)
-        testing_feature_id: For testing agents, the pre-claimed feature ID to test
+        testing_feature_id: For testing agents, the pre-claimed feature ID to test (legacy single mode)
+        testing_feature_ids: For testing agents, list of feature IDs to batch test
     """
-    # Initialize structured logger for this agent session
-    # Agent ID format: "initializer", "coding-<feature_id>", "testing-<pid>"
-    if agent_type == "testing":
-        agent_id = f"testing-{os.getpid()}"
-    elif feature_id:
-        agent_id = f"coding-{feature_id}"
-    elif agent_type == "initializer":
-        agent_id = "initializer"
-    else:
-        agent_id = "coding-main"
-
-    logger = get_logger(project_dir, agent_id=agent_id, console_output=False)
-    logger.info(
-        "Autonomous agent started",
-        agent_type=agent_type or "auto-detect",
-        model=model,
-        yolo_mode=yolo_mode,
-        max_iterations=max_iterations,
-        feature_id=feature_id,
-    )
-
     print("\n" + "=" * 70)
     print("  AUTONOMOUS CODING AGENT")
     print("=" * 70)
@@ -204,7 +168,9 @@ async def run_autonomous_agent(
         print(f"Agent type: {agent_type}")
     if yolo_mode:
         print("Mode: YOLO (testing agents disabled)")
-    if feature_id:
+    if feature_ids and len(feature_ids) > 1:
+        print(f"Feature batch: {', '.join(f'#{fid}' for fid in feature_ids)}")
+    elif feature_id:
         print(f"Feature assignment: #{feature_id}")
     if max_iterations:
         print(f"Max iterations: {max_iterations}")
@@ -214,29 +180,6 @@ async def run_autonomous_agent(
 
     # Create project directory
     project_dir.mkdir(parents=True, exist_ok=True)
-
-    # IMPORTANT: Do NOT clear stuck features in parallel mode!
-    # The orchestrator manages feature claiming atomically.
-    # Clearing here causes race conditions where features are marked in_progress
-    # by the orchestrator but immediately cleared by the agent subprocess on startup.
-    #
-    # For single-agent mode or manual runs, clearing is still safe because
-    # there's only one agent at a time and it happens before claiming any features.
-    #
-    # Only clear if we're NOT in a parallel orchestrator context
-    # (detected by checking if this agent is a subprocess spawned by orchestrator)
-    import psutil
-    try:
-        parent_process = psutil.Process().parent()
-        parent_name = parent_process.name() if parent_process else ""
-
-        # Only clear if parent is NOT python (i.e., we're running manually, not from orchestrator)
-        if "python" not in parent_name.lower():
-            clear_stuck_features(project_dir)
-    except Exception:
-        # If parent process check fails, do NOT clear features to avoid race conditions
-        # in parallel mode. The orchestrator handles clearing stuck features safely.
-        pass
 
     # Determine agent type if not explicitly set
     if agent_type is None:
@@ -281,7 +224,6 @@ async def run_autonomous_agent(
         if not is_initializer and iteration == 1:
             passing, in_progress, total = count_passing_tests(project_dir)
             if total > 0 and passing == total:
-                logger.info("Project complete on startup", passing=passing, total=total)
                 print("\n" + "=" * 70)
                 print("  ALL FEATURES ALREADY COMPLETE!")
                 print("=" * 70)
@@ -298,35 +240,41 @@ async def run_autonomous_agent(
         print_session_header(iteration, is_initializer)
 
         # Create client (fresh context)
-        # Pass client_agent_id for browser isolation in multi-agent scenarios
+        # Pass agent_id for browser isolation in multi-agent scenarios
+        import os
         if agent_type == "testing":
-            client_agent_id = f"testing-{os.getpid()}"  # Unique ID for testing agents
+            agent_id = f"testing-{os.getpid()}"  # Unique ID for testing agents
+        elif feature_ids and len(feature_ids) > 1:
+            agent_id = f"batch-{feature_ids[0]}"
         elif feature_id:
-            client_agent_id = f"feature-{feature_id}"
+            agent_id = f"feature-{feature_id}"
         else:
-            client_agent_id = None
-        client = create_client(project_dir, model, yolo_mode=yolo_mode, agent_id=client_agent_id)
+            agent_id = None
+        client = create_client(project_dir, model, yolo_mode=yolo_mode, agent_id=agent_id, agent_type=agent_type)
 
         # Choose prompt based on agent type
         if agent_type == "initializer":
             prompt = get_initializer_prompt(project_dir)
         elif agent_type == "testing":
-            prompt = get_testing_prompt(project_dir, testing_feature_id)
-        elif feature_id:
+            prompt = get_testing_prompt(project_dir, testing_feature_id, testing_feature_ids)
+        elif feature_ids and len(feature_ids) > 1:
+            # Batch mode (used by orchestrator for multi-feature coding agents)
+            prompt = get_batch_feature_prompt(feature_ids, project_dir, yolo_mode)
+        elif feature_id or (feature_ids is not None and len(feature_ids) == 1):
             # Single-feature mode (used by orchestrator for coding agents)
-            prompt = get_single_feature_prompt(feature_id, project_dir, yolo_mode)
+            fid = feature_id if feature_id is not None else feature_ids[0]  # type: ignore[index]
+            prompt = get_single_feature_prompt(fid, project_dir, yolo_mode)
         else:
             # General coding prompt (legacy path)
-            prompt = get_coding_prompt(project_dir)
+            prompt = get_coding_prompt(project_dir, yolo_mode=yolo_mode)
 
         # Run session with async context manager
         # Wrap in try/except to handle MCP server startup failures gracefully
         try:
             async with client:
-                status, response = await run_agent_session(client, prompt, project_dir, logger=logger)
+                status, response = await run_agent_session(client, prompt, project_dir)
         except Exception as e:
             print(f"Client/MCP server error: {e}")
-            logger.error("Client/MCP server error", error_type=type(e).__name__, error_message=str(e)[:200])
             # Don't crash - return error status so the loop can retry
             status, response = "error", str(e)
 
@@ -350,19 +298,16 @@ async def run_autonomous_agent(
             # Check for rate limit indicators in response text
             if is_rate_limit_error(response):
                 print("Claude Agent SDK indicated rate limit reached.")
-                logger.warning("Rate limit signal in response")
                 reset_rate_limit_retries = False
 
                 # Try to extract retry-after from response text first
                 retry_seconds = parse_retry_after(response)
                 if retry_seconds is not None:
                     delay_seconds = clamp_retry_delay(retry_seconds)
-                    logger.warning("Rate limit signal in response", delay_seconds=delay_seconds, source="retry-after")
                 else:
                     # Use exponential backoff when retry-after unknown
                     delay_seconds = calculate_rate_limit_backoff(rate_limit_retries)
                     rate_limit_retries += 1
-                    logger.warning("Rate limit signal in response", delay_seconds=delay_seconds, source="exponential-backoff", attempt=rate_limit_retries)
 
                 # Try to parse reset time from response (more specific format)
                 match = re.search(
@@ -422,12 +367,19 @@ async def run_autonomous_agent(
                 print("The autonomous agent has finished its work.")
                 break
 
-            # Single-feature mode OR testing agent: exit after one session
-            if feature_id is not None or agent_type == "testing":
+            # Single-feature mode, batch mode, or testing agent: exit after one session
+            if feature_ids and len(feature_ids) > 1:
+                print(f"\nBatch mode: Features {', '.join(f'#{fid}' for fid in feature_ids)} session complete.")
+                break
+            elif feature_id is not None or (feature_ids is not None and len(feature_ids) == 1):
+                fid = feature_id if feature_id is not None else feature_ids[0]  # type: ignore[index]
                 if agent_type == "testing":
                     print("\nTesting agent complete. Terminating session.")
                 else:
-                    print(f"\nSingle-feature mode: Feature #{feature_id} session complete.")
+                    print(f"\nSingle-feature mode: Feature #{fid} session complete.")
+                break
+            elif agent_type == "testing":
+                print("\nTesting agent complete. Terminating session.")
                 break
 
             # Reset rate limit retries only if no rate limit signal was detected
@@ -451,10 +403,8 @@ async def run_autonomous_agent(
                 delay_seconds = calculate_rate_limit_backoff(rate_limit_retries)
                 rate_limit_retries += 1
                 print(f"\nRate limit hit. Backoff wait: {delay_seconds} seconds (attempt #{rate_limit_retries})...")
-                logger.warning("Rate limit backoff", delay_seconds=delay_seconds, source="exponential", attempt=rate_limit_retries)
             else:
                 print(f"\nRate limit hit. Waiting {delay_seconds} seconds before retry...")
-                logger.warning("Rate limit backoff", delay_seconds=delay_seconds, source="known")
 
             await asyncio.sleep(delay_seconds)
 
@@ -466,23 +416,14 @@ async def run_autonomous_agent(
             delay_seconds = calculate_error_backoff(error_retries)
             print("\nSession encountered an error")
             print(f"Will retry in {delay_seconds}s (attempt #{error_retries})...")
-            logger.error("Session error, retrying", attempt=error_retries, delay_seconds=delay_seconds)
             await asyncio.sleep(delay_seconds)
 
-        # Small delay between sessions (3 seconds as per CLAUDE.md doc)
+        # Small delay between sessions
         if max_iterations is None or iteration < max_iterations:
             print("\nPreparing next session...\n")
-            await asyncio.sleep(3)
+            await asyncio.sleep(1)
 
     # Final summary
-    passing, in_progress, total = count_passing_tests(project_dir)
-    logger.info(
-        "Agent session complete",
-        iterations=iteration,
-        passing=passing,
-        in_progress=in_progress,
-        total=total,
-    )
     print("\n" + "=" * 70)
     print("  SESSION COMPLETE")
     print("=" * 70)

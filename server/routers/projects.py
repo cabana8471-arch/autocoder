@@ -15,8 +15,6 @@ from typing import Any, Callable
 from fastapi import APIRouter, HTTPException
 
 from ..schemas import (
-    DetachResponse,
-    DetachStatusResponse,
     ProjectCreate,
     ProjectDetail,
     ProjectPrompts,
@@ -24,23 +22,22 @@ from ..schemas import (
     ProjectSettingsUpdate,
     ProjectStats,
     ProjectSummary,
-    ReattachResponse,
 )
 
 # Lazy imports to avoid circular dependencies
+# These are initialized by _init_imports() before first use.
 _imports_initialized = False
-_check_spec_exists: Callable[[Path], bool] | None = None
-_scaffold_project_prompts: Callable[[Path], None] | None = None
-_get_project_prompts_dir: Callable[[Path], Path] | None = None
-_count_passing_tests: Callable[[Path], tuple[int, int, int]] | None = None
-_detach_module: Any = None  # Module type
+_check_spec_exists: Callable[..., Any] | None = None
+_scaffold_project_prompts: Callable[..., Any] | None = None
+_get_project_prompts_dir: Callable[..., Any] | None = None
+_count_passing_tests: Callable[..., Any] | None = None
 
 
 def _init_imports():
     """Lazy import of project-level modules."""
     global _imports_initialized, _check_spec_exists
     global _scaffold_project_prompts, _get_project_prompts_dir
-    global _count_passing_tests, _detach_module
+    global _count_passing_tests
 
     if _imports_initialized:
         return
@@ -50,7 +47,6 @@ def _init_imports():
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
 
-    import detach as detach_module
     from progress import count_passing_tests
     from prompts import get_project_prompts_dir, scaffold_project_prompts
     from start import check_spec_exists
@@ -59,7 +55,6 @@ def _init_imports():
     _scaffold_project_prompts = scaffold_project_prompts
     _get_project_prompts_dir = get_project_prompts_dir
     _count_passing_tests = count_passing_tests
-    _detach_module = detach_module
     _imports_initialized = True
 
 
@@ -106,7 +101,7 @@ def validate_project_name(name: str) -> str:
 def get_project_stats(project_dir: Path) -> ProjectStats:
     """Get statistics for a project."""
     _init_imports()
-    assert _count_passing_tests is not None
+    assert _count_passing_tests is not None  # guaranteed by _init_imports()
     passing, in_progress, total = _count_passing_tests(project_dir)
     percentage = (passing / total * 100) if total > 0 else 0.0
     return ProjectStats(
@@ -121,6 +116,7 @@ def get_project_stats(project_dir: Path) -> ProjectStats:
 async def list_projects():
     """List all registered projects."""
     _init_imports()
+    assert _check_spec_exists is not None  # guaranteed by _init_imports()
     (_, _, _, list_registered_projects, validate_project_path,
      get_project_concurrency, _) = _get_registry_functions()
 
@@ -135,11 +131,8 @@ async def list_projects():
         if not is_valid:
             continue
 
-        assert _check_spec_exists is not None
-        assert _detach_module is not None
         has_spec = _check_spec_exists(project_dir)
         stats = get_project_stats(project_dir)
-        is_detached = _detach_module.is_project_detached(project_dir)
 
         result.append(ProjectSummary(
             name=name,
@@ -147,7 +140,6 @@ async def list_projects():
             has_spec=has_spec,
             stats=stats,
             default_concurrency=info.get("default_concurrency", 3),
-            is_detached=is_detached,
         ))
 
     return result
@@ -157,6 +149,7 @@ async def list_projects():
 async def create_project(project: ProjectCreate):
     """Create a new project at the specified path."""
     _init_imports()
+    assert _scaffold_project_prompts is not None  # guaranteed by _init_imports()
     (register_project, _, get_project_path, list_registered_projects,
      _, _, _) = _get_registry_functions()
 
@@ -213,7 +206,6 @@ async def create_project(project: ProjectCreate):
             )
 
     # Scaffold prompts
-    assert _scaffold_project_prompts is not None
     _scaffold_project_prompts(project_path)
 
     # Register in registry
@@ -238,6 +230,8 @@ async def create_project(project: ProjectCreate):
 async def get_project(name: str):
     """Get detailed information about a project."""
     _init_imports()
+    assert _check_spec_exists is not None  # guaranteed by _init_imports()
+    assert _get_project_prompts_dir is not None  # guaranteed by _init_imports()
     (_, _, get_project_path, _, _, get_project_concurrency, _) = _get_registry_functions()
 
     name = validate_project_name(name)
@@ -249,8 +243,6 @@ async def get_project(name: str):
     if not project_dir.exists():
         raise HTTPException(status_code=404, detail=f"Project directory no longer exists: {project_dir}")
 
-    assert _check_spec_exists is not None
-    assert _get_project_prompts_dir is not None
     has_spec = _check_spec_exists(project_dir)
     stats = get_project_stats(project_dir)
     prompts_dir = _get_project_prompts_dir(project_dir)
@@ -262,7 +254,6 @@ async def get_project(name: str):
         stats=stats,
         prompts_dir=str(prompts_dir),
         default_concurrency=get_project_concurrency(name),
-        is_detached=_detach_module.is_project_detached(project_dir),
     )
 
 
@@ -285,7 +276,7 @@ async def delete_project(name: str, delete_files: bool = False):
         raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
 
     # Check if agent is running
-    from autocoder_paths import has_agent_running
+    from autoforge_paths import has_agent_running
     if has_agent_running(project_dir):
         raise HTTPException(
             status_code=409,
@@ -312,6 +303,7 @@ async def delete_project(name: str, delete_files: bool = False):
 async def get_project_prompts(name: str):
     """Get the content of project prompt files."""
     _init_imports()
+    assert _get_project_prompts_dir is not None  # guaranteed by _init_imports()
     (_, _, get_project_path, _, _, _, _) = _get_registry_functions()
 
     name = validate_project_name(name)
@@ -323,8 +315,7 @@ async def get_project_prompts(name: str):
     if not project_dir.exists():
         raise HTTPException(status_code=404, detail="Project directory not found")
 
-    assert _get_project_prompts_dir is not None
-    prompts_dir = _get_project_prompts_dir(project_dir)
+    prompts_dir: Path = _get_project_prompts_dir(project_dir)
 
     def read_file(filename: str) -> str:
         filepath = prompts_dir / filename
@@ -346,6 +337,7 @@ async def get_project_prompts(name: str):
 async def update_project_prompts(name: str, prompts: ProjectPromptsUpdate):
     """Update project prompt files."""
     _init_imports()
+    assert _get_project_prompts_dir is not None  # guaranteed by _init_imports()
     (_, _, get_project_path, _, _, _, _) = _get_registry_functions()
 
     name = validate_project_name(name)
@@ -357,7 +349,6 @@ async def update_project_prompts(name: str, prompts: ProjectPromptsUpdate):
     if not project_dir.exists():
         raise HTTPException(status_code=404, detail="Project directory not found")
 
-    assert _get_project_prompts_dir is not None
     prompts_dir = _get_project_prompts_dir(project_dir)
     prompts_dir.mkdir(parents=True, exist_ok=True)
 
@@ -416,7 +407,7 @@ async def reset_project(name: str, full_reset: bool = False):
         raise HTTPException(status_code=404, detail="Project directory not found")
 
     # Check if agent is running
-    from autocoder_paths import has_agent_running
+    from autoforge_paths import has_agent_running
     if has_agent_running(project_dir):
         raise HTTPException(
             status_code=409,
@@ -433,7 +424,7 @@ async def reset_project(name: str, full_reset: bool = False):
 
     deleted_files: list[str] = []
 
-    from autocoder_paths import (
+    from autoforge_paths import (
         get_assistant_db_path,
         get_claude_assistant_settings_path,
         get_claude_settings_path,
@@ -475,7 +466,7 @@ async def reset_project(name: str, full_reset: bool = False):
 
     # Full reset: also delete prompts directory
     if full_reset:
-        from autocoder_paths import get_prompts_dir
+        from autoforge_paths import get_prompts_dir
         # Delete prompts from both possible locations
         for prompts_dir in [get_prompts_dir(project_dir), project_dir / "prompts"]:
             if prompts_dir.exists():
@@ -498,6 +489,8 @@ async def reset_project(name: str, full_reset: bool = False):
 async def update_project_settings(name: str, settings: ProjectSettingsUpdate):
     """Update project-level settings (concurrency, etc.)."""
     _init_imports()
+    assert _check_spec_exists is not None  # guaranteed by _init_imports()
+    assert _get_project_prompts_dir is not None  # guaranteed by _init_imports()
     (_, _, get_project_path, _, _, get_project_concurrency,
      set_project_concurrency) = _get_registry_functions()
 
@@ -517,8 +510,6 @@ async def update_project_settings(name: str, settings: ProjectSettingsUpdate):
             raise HTTPException(status_code=500, detail="Failed to update concurrency")
 
     # Return updated project details
-    assert _check_spec_exists is not None
-    assert _get_project_prompts_dir is not None
     has_spec = _check_spec_exists(project_dir)
     stats = get_project_stats(project_dir)
     prompts_dir = _get_project_prompts_dir(project_dir)
@@ -530,152 +521,4 @@ async def update_project_settings(name: str, settings: ProjectSettingsUpdate):
         stats=stats,
         prompts_dir=str(prompts_dir),
         default_concurrency=get_project_concurrency(name),
-        is_detached=_detach_module.is_project_detached(project_dir),
-    )
-
-
-# ============================================================================
-# Detach/Reattach Endpoints
-# ============================================================================
-
-@router.get("/{name}/detach-status", response_model=DetachStatusResponse)
-def get_detach_status(name: str):
-    """Check if a project is detached and get backup info."""
-    _init_imports()
-    (_, _, get_project_path, _, _, _, _) = _get_registry_functions()
-
-    name = validate_project_name(name)
-    project_dir = get_project_path(name)
-
-    if not project_dir:
-        raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
-
-    if not project_dir.exists():
-        raise HTTPException(status_code=404, detail="Project directory not found")
-
-    assert _detach_module is not None
-    status = _detach_module.get_detach_status(name)
-
-    return DetachStatusResponse(
-        is_detached=status["is_detached"],
-        backup_exists=status["backup_exists"],
-        backup_size=status.get("backup_size"),
-        detached_at=status.get("detached_at"),
-        file_count=status.get("file_count"),
-    )
-
-
-@router.post("/{name}/detach", response_model=DetachResponse)
-def detach_project(name: str):
-    """
-    Detach a project by moving Autocoder files to backup.
-
-    This allows Claude Code to run without Autocoder restrictions.
-    Files can be restored later with reattach.
-
-    Note: Using sync function because detach_project() performs blocking I/O.
-    FastAPI will run this in a threadpool automatically.
-    """
-    _init_imports()
-    (_, _, get_project_path, _, _, _, _) = _get_registry_functions()
-
-    name = validate_project_name(name)
-    project_dir = get_project_path(name)
-
-    if not project_dir:
-        raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
-
-    if not project_dir.exists():
-        raise HTTPException(status_code=404, detail="Project directory not found")
-
-    # Note: Agent lock check is handled inside detach_project() to avoid TOCTOU race.
-    # The detach module will return an appropriate error message if agent is running.
-
-    # Dispose cached database engines before detach to release file locks (Windows)
-    from api.database import dispose_engine as dispose_features_engine
-    from server.services.assistant_database import dispose_engine as dispose_assistant_engine
-    dispose_features_engine(project_dir)
-    dispose_assistant_engine(project_dir)
-
-    assert _detach_module is not None
-    success, message, manifest, user_files_restored = _detach_module.detach_project(
-        name,
-        force=False,
-        include_artifacts=True,
-        dry_run=False,
-    )
-
-    if not success:
-        # Map common error messages to appropriate HTTP status codes
-        if "Agent is currently running" in message:
-            raise HTTPException(status_code=409, detail=message)
-        elif "already detached" in message:
-            raise HTTPException(status_code=409, detail=message)
-        elif "in progress" in message:
-            raise HTTPException(status_code=409, detail=message)
-        raise HTTPException(status_code=400, detail=message)
-
-    return DetachResponse(
-        success=True,
-        files_moved=manifest["file_count"] if manifest else 0,
-        backup_size=manifest["total_size_bytes"] if manifest else 0,
-        backup_path=_detach_module.BACKUP_DIR,  # Return relative path, not absolute
-        message=message,
-        user_files_restored=user_files_restored,
-    )
-
-
-@router.post("/{name}/reattach", response_model=ReattachResponse)
-def reattach_project(name: str):
-    """
-    Reattach a project by restoring Autocoder files from backup.
-
-    This restores all Autocoder files and re-enables restrictions.
-
-    Note: Using sync function because reattach_project() performs blocking I/O.
-    FastAPI will run this in a threadpool automatically.
-    """
-    _init_imports()
-    (_, _, get_project_path, _, _, _, _) = _get_registry_functions()
-
-    name = validate_project_name(name)
-    project_dir = get_project_path(name)
-
-    if not project_dir:
-        raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
-
-    if not project_dir.exists():
-        raise HTTPException(status_code=404, detail="Project directory not found")
-
-    # Check if agent is running (consistent with detach endpoint)
-    lock_file = project_dir / ".agent.lock"
-    if lock_file.exists():
-        raise HTTPException(
-            status_code=409,
-            detail="Cannot reattach while agent is running. Stop the agent first."
-        )
-
-    assert _detach_module is not None
-    success, message, files_restored, conflicts = _detach_module.reattach_project(name)
-
-    if not success:
-        # Map common error messages to appropriate HTTP status codes
-        if "in progress" in message:
-            raise HTTPException(status_code=409, detail=message)
-        elif "already attached" in message:
-            raise HTTPException(status_code=409, detail=message)
-        raise HTTPException(status_code=400, detail=message)
-
-    # Dispose cached database engines so next request gets fresh connection
-    from api.database import dispose_engine as dispose_features_engine
-    from server.services.assistant_database import dispose_engine as dispose_assistant_engine
-    dispose_features_engine(project_dir)
-    dispose_assistant_engine(project_dir)
-
-    return ReattachResponse(
-        success=True,
-        files_restored=files_restored,
-        message=message,
-        conflicts=conflicts,
-        conflicts_backup_path=_detach_module.PRE_REATTACH_BACKUP_DIR if conflicts else None,
     )

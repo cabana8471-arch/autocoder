@@ -15,7 +15,7 @@ import sys
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Awaitable, Callable, Literal, Set
+from typing import Any, Awaitable, Callable, Literal, Set
 
 import psutil
 
@@ -92,7 +92,7 @@ class AgentProcessManager:
         self._callbacks_lock = threading.Lock()
 
         # Lock file to prevent multiple instances (stored in project directory)
-        from autocoder_paths import get_agent_lock_path
+        from autoforge_paths import get_agent_lock_path
         self.lock_file = get_agent_lock_path(self.project_dir)
 
     @property
@@ -227,6 +227,46 @@ class AgentProcessManager:
         """Remove lock file."""
         self.lock_file.unlink(missing_ok=True)
 
+    def _cleanup_stale_features(self) -> None:
+        """Clear in_progress flag for all features when agent stops/crashes.
+
+        When the agent process exits (normally or crash), any features left
+        with in_progress=True were being worked on and didn't complete.
+        Reset them so they can be picked up on next agent start.
+        """
+        try:
+            from autoforge_paths import get_features_db_path
+            features_db = get_features_db_path(self.project_dir)
+            if not features_db.exists():
+                return
+
+            from sqlalchemy import create_engine
+            from sqlalchemy.orm import sessionmaker
+
+            from api.database import Feature
+
+            engine = create_engine(f"sqlite:///{features_db}")
+            Session = sessionmaker(bind=engine)
+            session = Session()
+            try:
+                stuck = session.query(Feature).filter(
+                    Feature.in_progress == True,  # noqa: E712
+                    Feature.passes == False,  # noqa: E712
+                ).all()
+                if stuck:
+                    for f in stuck:
+                        f.in_progress = False
+                    session.commit()
+                    logger.info(
+                        "Cleaned up %d stuck feature(s) for %s",
+                        len(stuck), self.project_name,
+                    )
+            finally:
+                session.close()
+                engine.dispose()
+        except Exception as e:
+            logger.warning("Failed to cleanup features for %s: %s", self.project_name, e)
+
     async def _broadcast_output(self, line: str) -> None:
         """Broadcast output line to all registered callbacks."""
         with self._callbacks_lock:
@@ -288,6 +328,7 @@ class AgentProcessManager:
                     self.status = "crashed"
                 elif self.status == "running":
                     self.status = "stopped"
+                self._cleanup_stale_features()
                 self._remove_lock()
 
     async def start(
@@ -297,16 +338,19 @@ class AgentProcessManager:
         parallel_mode: bool = False,
         max_concurrency: int | None = None,
         testing_agent_ratio: int = 1,
+        playwright_headless: bool = True,
+        batch_size: int = 3,
     ) -> tuple[bool, str]:
         """
         Start the agent as a subprocess.
 
         Args:
             yolo_mode: If True, run in YOLO mode (skip testing agents)
-            model: Model to use (e.g., claude-opus-4-5-20251101)
+            model: Model to use (e.g., claude-opus-4-6)
             parallel_mode: DEPRECATED - ignored, always uses unified orchestrator
             max_concurrency: Max concurrent coding agents (1-5, default 1)
             testing_agent_ratio: Number of regression testing agents (0-3, default 1)
+            playwright_headless: If True, run browser in headless mode
 
         Returns:
             Tuple of (success, message)
@@ -316,6 +360,9 @@ class AgentProcessManager:
 
         if not self._check_lock():
             return False, "Another agent instance is already running for this project"
+
+        # Clean up features stuck from a previous crash/stop
+        self._cleanup_stale_features()
 
         # Store for status queries
         self.yolo_mode = yolo_mode
@@ -347,32 +394,36 @@ class AgentProcessManager:
         # Add testing agent configuration
         cmd.extend(["--testing-ratio", str(testing_agent_ratio)])
 
+        # Add --batch-size flag for multi-feature batching
+        cmd.extend(["--batch-size", str(batch_size)])
+
         try:
             # Start subprocess with piped stdout/stderr
             # Use project_dir as cwd so Claude SDK sandbox allows access to project files
             # stdin=DEVNULL prevents blocking if Claude CLI or child process tries to read stdin
             # CREATE_NO_WINDOW on Windows prevents console window pop-ups
             # PYTHONUNBUFFERED ensures output isn't delayed
-            env: dict[str, str] = {**os.environ, "PYTHONUNBUFFERED": "1"}
+            # Build subprocess environment with API provider settings
+            from registry import get_effective_sdk_env
+            api_env = get_effective_sdk_env()
+            subprocess_env = {
+                **os.environ,
+                "PYTHONUNBUFFERED": "1",
+                "PLAYWRIGHT_HEADLESS": "true" if playwright_headless else "false",
+                **api_env,
+            }
+
+            popen_kwargs: dict[str, Any] = {
+                "stdin": subprocess.DEVNULL,
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.STDOUT,
+                "cwd": str(self.project_dir),
+                "env": subprocess_env,
+            }
             if sys.platform == "win32":
-                self.process = subprocess.Popen(
-                    cmd,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    cwd=str(self.project_dir),
-                    env=env,
-                    creationflags=subprocess.CREATE_NO_WINDOW,
-                )
-            else:
-                self.process = subprocess.Popen(
-                    cmd,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    cwd=str(self.project_dir),
-                    env=env,
-                )
+                popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
+            self.process = subprocess.Popen(cmd, **popen_kwargs)
 
             # Atomic lock creation - if it fails, another process beat us
             if not self._create_lock():
@@ -428,6 +479,7 @@ class AgentProcessManager:
                 result.children_terminated, result.children_killed
             )
 
+            self._cleanup_stale_features()
             self._remove_lock()
             self.status = "stopped"
             self.process = None
@@ -505,6 +557,7 @@ class AgentProcessManager:
         if poll is not None:
             # Process has terminated
             if self.status in ("running", "paused"):
+                self._cleanup_stale_features()
                 self.status = "crashed"
                 self._remove_lock()
             return False
@@ -590,10 +643,10 @@ def cleanup_orphaned_locks() -> int:
                 continue
 
             # Check both legacy and new locations for lock files
-            from autocoder_paths import get_autocoder_dir
+            from autoforge_paths import get_autoforge_dir
             lock_locations = [
                 project_path / ".agent.lock",
-                get_autocoder_dir(project_path) / ".agent.lock",
+                get_autoforge_dir(project_path) / ".agent.lock",
             ]
             lock_file = None
             for candidate in lock_locations:

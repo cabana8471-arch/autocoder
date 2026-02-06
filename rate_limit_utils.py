@@ -6,6 +6,7 @@ Shared utilities for detecting and handling API rate limits.
 Used by both agent.py (production) and test_rate_limit_utils.py (tests).
 """
 
+import random
 import re
 from typing import Optional
 
@@ -81,18 +82,25 @@ def is_rate_limit_error(error_message: str) -> bool:
 
 def calculate_rate_limit_backoff(retries: int) -> int:
     """
-    Calculate exponential backoff for rate limits.
+    Calculate exponential backoff with jitter for rate limits.
 
-    Formula: min(60 * 2^retries, 3600) - caps at 1 hour
-    Sequence: 60s, 120s, 240s, 480s, 960s, 1920s, 3600s...
+    Base formula: min(15 * 2^retries, 3600)
+    Jitter: adds 0-30% random jitter to prevent thundering herd.
+    Base sequence: ~15-20s, ~30-40s, ~60-78s, ~120-156s, ...
+
+    The lower starting delay (15s vs 60s) allows faster recovery from
+    transient rate limits, while jitter prevents synchronized retries
+    when multiple agents hit limits simultaneously.
 
     Args:
         retries: Number of consecutive rate limit retries (0-indexed)
 
     Returns:
-        Delay in seconds (clamped to 1-3600 range)
+        Delay in seconds (clamped to 1-3600 range, with jitter)
     """
-    return int(min(max(60 * (2 ** retries), 1), 3600))
+    base = int(min(max(15 * (2 ** retries), 1), 3600))
+    jitter = random.uniform(0, base * 0.3)
+    return int(base + jitter)
 
 
 def calculate_error_backoff(retries: int) -> int:

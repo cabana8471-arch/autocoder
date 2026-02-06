@@ -6,41 +6,24 @@ API endpoints for agent control (start/stop/pause/resume).
 Uses project registry for path lookups.
 """
 
-import re
-import sys
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
 from ..schemas import AgentActionResponse, AgentStartRequest, AgentStatus
+from ..services.chat_constants import ROOT_DIR
 from ..services.process_manager import get_manager
+from ..utils.project_helpers import get_project_path as _get_project_path
+from ..utils.validation import validate_project_name
 
 
-def _get_detach_module():
-    """Lazy import of detach module."""
-    root = Path(__file__).parent.parent.parent
-    if str(root) not in sys.path:
-        sys.path.insert(0, str(root))
-    import detach
-    return detach
-
-
-def _get_project_path(project_name: str) -> Path | None:
-    """Get project path from registry."""
-    root = Path(__file__).parent.parent.parent
-    if str(root) not in sys.path:
-        sys.path.insert(0, str(root))
-
-    from registry import get_project_path
-    return get_project_path(project_name)
-
-
-def _get_settings_defaults() -> tuple[bool, str, int]:
+def _get_settings_defaults() -> tuple[bool, str, int, bool, int]:
     """Get defaults from global settings.
 
     Returns:
-        Tuple of (yolo_mode, model, testing_agent_ratio)
+        Tuple of (yolo_mode, model, testing_agent_ratio, playwright_headless, batch_size)
     """
+    import sys
     root = Path(__file__).parent.parent.parent
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
@@ -49,7 +32,7 @@ def _get_settings_defaults() -> tuple[bool, str, int]:
 
     settings = get_all_settings()
     yolo_mode = (settings.get("yolo_mode") or "false").lower() == "true"
-    model = settings.get("model", DEFAULT_MODEL)
+    model = settings.get("api_model") or settings.get("model", DEFAULT_MODEL)
 
     # Parse testing agent settings with defaults
     try:
@@ -57,23 +40,17 @@ def _get_settings_defaults() -> tuple[bool, str, int]:
     except (ValueError, TypeError):
         testing_agent_ratio = 1
 
-    return yolo_mode, model, testing_agent_ratio
+    playwright_headless = (settings.get("playwright_headless") or "true").lower() == "true"
+
+    try:
+        batch_size = int(settings.get("batch_size", "3"))
+    except (ValueError, TypeError):
+        batch_size = 3
+
+    return yolo_mode, model, testing_agent_ratio, playwright_headless, batch_size
 
 
 router = APIRouter(prefix="/api/projects/{project_name}/agent", tags=["agent"])
-
-# Root directory for process manager
-ROOT_DIR = Path(__file__).parent.parent.parent
-
-
-def validate_project_name(name: str) -> str:
-    """Validate and sanitize project name to prevent path traversal."""
-    if not re.match(r'^[a-zA-Z0-9_-]{1,50}$', name):
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid project name"
-        )
-    return name
 
 
 def get_project_manager(project_name: str):
@@ -116,31 +93,25 @@ async def start_agent(
     request: AgentStartRequest = AgentStartRequest(),
 ):
     """Start the agent for a project."""
-    # Check detach status before starting agent
-    project_dir = _get_project_path(project_name)
-    if project_dir:
-        detach = _get_detach_module()
-        if detach.is_project_detached(project_dir):
-            raise HTTPException(
-                status_code=409,
-                detail=f"Project '{project_name}' is detached. Reattach to start agent."
-            )
-
     manager = get_project_manager(project_name)
 
     # Get defaults from global settings if not provided in request
-    default_yolo, default_model, default_testing_ratio = _get_settings_defaults()
+    default_yolo, default_model, default_testing_ratio, playwright_headless, default_batch_size = _get_settings_defaults()
 
     yolo_mode = request.yolo_mode if request.yolo_mode is not None else default_yolo
     model = request.model if request.model else default_model
     max_concurrency = request.max_concurrency or 1
     testing_agent_ratio = request.testing_agent_ratio if request.testing_agent_ratio is not None else default_testing_ratio
 
+    batch_size = default_batch_size
+
     success, message = await manager.start(
         yolo_mode=yolo_mode,
         model=model,
         max_concurrency=max_concurrency,
         testing_agent_ratio=testing_agent_ratio,
+        playwright_headless=playwright_headless,
+        batch_size=batch_size,
     )
 
     # Notify scheduler of manual start (to prevent auto-stop during scheduled window)

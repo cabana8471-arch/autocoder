@@ -25,24 +25,12 @@ from .assistant_database import (
     create_conversation,
     get_messages,
 )
+from .chat_constants import ROOT_DIR
 
 # Load environment variables from .env file if present
 load_dotenv()
 
 logger = logging.getLogger(__name__)
-
-# Root directory of the project
-ROOT_DIR = Path(__file__).parent.parent.parent
-
-# Environment variables to pass through to Claude CLI for API configuration
-API_ENV_VARS = [
-    "ANTHROPIC_BASE_URL",
-    "ANTHROPIC_AUTH_TOKEN",
-    "API_TIMEOUT_MS",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-]
 
 # Read-only feature MCP tools
 READONLY_FEATURE_MCP_TOOLS = [
@@ -59,8 +47,13 @@ FEATURE_MANAGEMENT_TOOLS = [
     "mcp__features__feature_skip",
 ]
 
+# Interactive tools
+INTERACTIVE_TOOLS = [
+    "mcp__features__ask_user",
+]
+
 # Combined list for assistant
-ASSISTANT_FEATURE_TOOLS = READONLY_FEATURE_MCP_TOOLS + FEATURE_MANAGEMENT_TOOLS
+ASSISTANT_FEATURE_TOOLS = READONLY_FEATURE_MCP_TOOLS + FEATURE_MANAGEMENT_TOOLS + INTERACTIVE_TOOLS
 
 # Read-only built-in tools (no Write, Edit, Bash)
 READONLY_BUILTIN_TOOLS = [
@@ -76,7 +69,7 @@ def get_system_prompt(project_name: str, project_dir: Path) -> str:
     """Generate the system prompt for the assistant with project context."""
     # Try to load app_spec.txt for context
     app_spec_content = ""
-    from autocoder_paths import get_prompts_dir
+    from autoforge_paths import get_prompts_dir
     app_spec_path = get_prompts_dir(project_dir) / "app_spec.txt"
     if app_spec_path.exists():
         try:
@@ -135,6 +128,9 @@ If the user asks you to modify code, explain that you're a project assistant and
 - **feature_create_bulk**: Create multiple features at once
 - **feature_skip**: Move a feature to the end of the queue
 
+**Interactive:**
+- **ask_user**: Present structured multiple-choice questions to the user. Use this when you need to clarify requirements, offer design choices, or guide a decision. The user sees clickable option buttons and their selection is returned as your next message.
+
 ## Creating Features
 
 When a user asks to add a feature, use the `feature_create` or `feature_create_bulk` MCP tools directly:
@@ -169,7 +165,7 @@ class AssistantChatSession:
     """
     Manages a read-only assistant conversation for a project.
 
-    Uses Claude Opus 4.5 with only read-only tools enabled.
+    Uses Claude Opus with only read-only tools enabled.
     Persists conversation history to SQLite.
     """
 
@@ -215,8 +211,7 @@ class AssistantChatSession:
         # Create a new conversation if we don't have one
         if is_new_conversation:
             conv = create_conversation(self.project_dir, self.project_name)
-            # SQLAlchemy Column[int] is actually int at runtime
-            self.conversation_id = conv.id  # type: ignore[assignment]
+            self.conversation_id = int(conv.id)  # type coercion: Column[int] -> int
             yield {"type": "conversation_created", "conversation_id": self.conversation_id}
 
         # Build permissions list for assistant access (read + feature management)
@@ -237,7 +232,7 @@ class AssistantChatSession:
                 "allow": permissions_list,
             },
         }
-        from autocoder_paths import get_claude_assistant_settings_path
+        from autoforge_paths import get_claude_assistant_settings_path
         settings_file = get_claude_assistant_settings_path(self.project_dir)
         settings_file.parent.mkdir(parents=True, exist_ok=True)
         with open(settings_file, "w") as f:
@@ -271,15 +266,11 @@ class AssistantChatSession:
         system_cli = shutil.which("claude")
 
         # Build environment overrides for API configuration
-        # Filter out None values for type safety
-        sdk_env: dict[str, str] = {
-            var: val for var in API_ENV_VARS
-            if (val := os.getenv(var)) is not None
-        }
+        from registry import DEFAULT_MODEL, get_effective_sdk_env
+        sdk_env = get_effective_sdk_env()
 
-        # Determine model from environment or use default
-        # This allows using alternative APIs (e.g., GLM via z.ai) that may not support Claude model names
-        model = os.getenv("ANTHROPIC_DEFAULT_OPUS_MODEL", "claude-opus-4-5-20251101")
+        # Determine model from SDK env (provider-aware) or fallback to env/default
+        model = sdk_env.get("ANTHROPIC_DEFAULT_OPUS_MODEL") or os.getenv("ANTHROPIC_DEFAULT_OPUS_MODEL", DEFAULT_MODEL)
 
         try:
             logger.info("Creating ClaudeSDKClient...")
@@ -291,7 +282,7 @@ class AssistantChatSession:
                     # This avoids Windows command line length limit (~8191 chars)
                     setting_sources=["project"],
                     allowed_tools=[*READONLY_BUILTIN_TOOLS, *ASSISTANT_FEATURE_TOOLS],
-                    mcp_servers=mcp_servers,  # type: ignore[arg-type]
+                    mcp_servers=mcp_servers,  # type: ignore[arg-type]  # SDK accepts dict config at runtime
                     permission_mode="bypassPermissions",
                     max_turns=100,
                     cwd=str(self.project_dir.resolve()),
@@ -317,7 +308,7 @@ class AssistantChatSession:
                 greeting = f"Hello! I'm your project assistant for **{self.project_name}**. I can help you understand the codebase, explain features, and answer questions about the project. What would you like to know?"
 
                 # Store the greeting in the database
-                # At this point conversation_id is guaranteed to be set
+                # conversation_id is guaranteed non-None here (set on line 206 above)
                 assert self.conversation_id is not None
                 add_message(self.project_dir, self.conversation_id, "assistant", greeting)
 
@@ -419,6 +410,17 @@ class AssistantChatSession:
                     elif block_type == "ToolUseBlock" and hasattr(block, "name"):
                         tool_name = block.name
                         tool_input = getattr(block, "input", {})
+
+                        # Intercept ask_user tool calls -> yield as question message
+                        if tool_name == "mcp__features__ask_user":
+                            questions = tool_input.get("questions", [])
+                            if questions:
+                                yield {
+                                    "type": "question",
+                                    "questions": questions,
+                                }
+                                continue
+
                         yield {
                             "type": "tool_call",
                             "tool": tool_name,

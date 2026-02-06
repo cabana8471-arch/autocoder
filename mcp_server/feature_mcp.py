@@ -48,7 +48,6 @@ from api.dependency_resolver import (
     would_create_circular_dependency,
 )
 from api.migration import migrate_json_to_sqlite
-from quality_gates import load_quality_config, verify_quality
 
 # Configuration from environment
 PROJECT_DIR = Path(os.environ.get("PROJECT_DIR", ".")).resolve()
@@ -229,42 +228,6 @@ def feature_get_summary(
 
 
 @mcp.tool()
-def feature_verify_quality() -> str:
-    """Run quality checks (lint, type-check) on the project.
-
-    Automatically detects and runs available linters and type checkers:
-    - Linters: ESLint, Biome (JS/TS), ruff, flake8 (Python)
-    - Type checkers: TypeScript (tsc), Python (mypy)
-    - Custom scripts: .autocoder/quality-checks.sh
-
-    Use this tool before marking a feature as passing to ensure code quality.
-    In strict mode (default), feature_mark_passing will block if quality checks fail.
-
-    Returns:
-        JSON with: passed (bool), checks (dict), summary (str)
-    """
-    config = load_quality_config(PROJECT_DIR)
-
-    if not config.get("enabled", True):
-        return json.dumps({
-            "passed": True,
-            "checks": {},
-            "summary": "Quality gates disabled"
-        })
-
-    checks_config = config.get("checks", {})
-    result = verify_quality(
-        PROJECT_DIR,
-        do_lint=checks_config.get("lint", True),
-        do_type_check=checks_config.get("type_check", True),
-        do_custom=True,
-        custom_script_path=checks_config.get("custom_script"),
-    )
-
-    return json.dumps(result)
-
-
-@mcp.tool()
 def feature_mark_passing(
     feature_id: Annotated[int, Field(description="The ID of the feature to mark as passing", ge=1)]
 ) -> str:
@@ -273,64 +236,34 @@ def feature_mark_passing(
     Updates the feature's passes field to true and clears the in_progress flag.
     Use this after you have implemented the feature and verified it works correctly.
 
-    Uses atomic SQL UPDATE for parallel safety.
-
-    IMPORTANT: In strict mode (default), this tool will run quality checks
-    (lint, type-check) and BLOCK if they fail. Run feature_verify_quality first
-    to see what checks will be performed.
-
     Args:
         feature_id: The ID of the feature to mark as passing
 
     Returns:
-        JSON with success confirmation: {success, feature_id, name, quality_result}
-        If strict mode is enabled and quality checks fail, returns an error.
+        JSON with success confirmation: {success, feature_id, name}
     """
-    # Run quality checks BEFORE opening DB session to avoid holding locks
-    config = load_quality_config(PROJECT_DIR)
-    quality_result = None
-
-    if config.get("enabled", True):
-        checks_config = config.get("checks", {})
-        quality_result = verify_quality(
-            PROJECT_DIR,
-            do_lint=checks_config.get("lint", True),
-            do_type_check=checks_config.get("type_check", True),
-            do_custom=True,
-            custom_script_path=checks_config.get("custom_script"),
-        )
-
-        # In strict mode, block if quality checks failed
-        if config.get("strict_mode", True) and not quality_result["passed"]:
-            return json.dumps({
-                "error": "Quality checks failed - cannot mark feature as passing",
-                "quality_result": quality_result,
-                "hint": "Fix the issues and try again, or disable strict_mode in .autocoder/config.json"
-            })
-
-    # Now open DB session for the atomic update
     session = get_session()
     try:
-        # First get the feature name for the response
-        feature = session.query(Feature).filter(Feature.id == feature_id).first()
-        if feature is None:
-            return json.dumps({"error": f"Feature with ID {feature_id} not found"})
-
-        name = feature.name
-
-        # Atomic update - prevents race conditions in parallel mode
-        session.execute(text("""
+        # Atomic update with state guard - prevents double-pass in parallel mode
+        result = session.execute(text("""
             UPDATE features
             SET passes = 1, in_progress = 0
-            WHERE id = :id
+            WHERE id = :id AND passes = 0
         """), {"id": feature_id})
         session.commit()
 
-        result_dict = {"success": True, "feature_id": feature_id, "name": name}
-        if quality_result:
-            result_dict["quality_result"] = quality_result
+        if result.rowcount == 0:
+            # Check why the update didn't match
+            feature = session.query(Feature).filter(Feature.id == feature_id).first()
+            if feature is None:
+                return json.dumps({"error": f"Feature with ID {feature_id} not found"})
+            if feature.passes:
+                return json.dumps({"error": f"Feature with ID {feature_id} is already passing"})
+            return json.dumps({"error": "Failed to mark feature passing for unknown reason"})
 
-        return json.dumps(result_dict)
+        # Get the feature name for the response
+        feature = session.query(Feature).filter(Feature.id == feature_id).first()
+        return json.dumps({"success": True, "feature_id": feature_id, "name": feature.name})
     except Exception as e:
         session.rollback()
         return json.dumps({"error": f"Failed to mark feature passing: {str(e)}"})
@@ -347,8 +280,6 @@ def feature_mark_failing(
     Updates the feature's passes field to false and clears the in_progress flag.
     Use this when a testing agent discovers that a previously-passing feature
     no longer works correctly (regression detected).
-
-    Uses atomic SQL UPDATE for parallel safety.
 
     After marking as failing, you should:
     1. Investigate the root cause
@@ -369,7 +300,7 @@ def feature_mark_failing(
         if feature is None:
             return json.dumps({"error": f"Feature with ID {feature_id} not found"})
 
-        # Atomic update - prevents race conditions in parallel mode
+        # Atomic update for parallel safety
         session.execute(text("""
             UPDATE features
             SET passes = 0, in_progress = 0
@@ -405,8 +336,6 @@ def feature_skip(
     The feature's priority is set to max_priority + 1, so it will be
     worked on after all other pending features. Also clears the in_progress
     flag so the feature returns to "pending" status.
-
-    Uses atomic SQL UPDATE with subquery for parallel safety.
 
     Args:
         feature_id: The ID of the feature to skip
@@ -464,9 +393,6 @@ def feature_mark_in_progress(
     This prevents other agent sessions from working on the same feature.
     Call this after getting your assigned feature details with feature_get_by_id.
 
-    Uses atomic UPDATE WHERE for parallel safety - prevents two agents from
-    claiming the same feature simultaneously.
-
     Args:
         feature_id: The ID of the feature to mark as in-progress
 
@@ -513,8 +439,6 @@ def feature_claim_and_get(
     Combines feature_mark_in_progress + feature_get_by_id into a single operation.
     If already in-progress, still returns the feature details (idempotent).
 
-    Uses atomic UPDATE WHERE for parallel safety.
-
     Args:
         feature_id: The ID of the feature to claim and retrieve
 
@@ -523,7 +447,7 @@ def feature_claim_and_get(
     """
     session = get_session()
     try:
-        # First check if feature exists and get initial state
+        # First check if feature exists
         feature = session.query(Feature).filter(Feature.id == feature_id).first()
         if feature is None:
             return json.dumps({"error": f"Feature with ID {feature_id} not found"})
@@ -568,8 +492,6 @@ def feature_clear_in_progress(
     Use this when abandoning a feature or manually unsticking a stuck feature.
     The feature will return to the pending queue.
 
-    Uses atomic SQL UPDATE for parallel safety.
-
     Args:
         feature_id: The ID of the feature to clear in-progress status
 
@@ -612,8 +534,6 @@ def feature_create_bulk(
     This is typically used by the initializer agent to set up the initial
     feature list from the app specification.
 
-    Uses EXCLUSIVE transaction to prevent priority collisions in parallel mode.
-
     Args:
         features: List of features to create, each with:
             - category (str): Feature category
@@ -629,8 +549,8 @@ def feature_create_bulk(
         JSON with: created (int) - number of features created, with_dependencies (int)
     """
     try:
-        # Use EXCLUSIVE transaction for bulk inserts to prevent conflicts
-        with atomic_transaction(_session_maker, "EXCLUSIVE") as session:
+        # Use atomic transaction for bulk inserts to prevent priority conflicts
+        with atomic_transaction(_session_maker) as session:
             # Get the starting priority atomically within the transaction
             result = session.execute(text("""
                 SELECT COALESCE(MAX(priority), 0) FROM features
@@ -673,7 +593,7 @@ def feature_create_bulk(
             created_features: list[Feature] = []
             for i, feature_data in enumerate(features):
                 db_feature = Feature(
-                    priority=start_priority + i,  # Guaranteed unique within EXCLUSIVE transaction
+                    priority=start_priority + i,
                     category=feature_data["category"],
                     name=feature_data["name"],
                     description=feature_data["description"],
@@ -694,8 +614,7 @@ def feature_create_bulk(
                 if indices:
                     # Convert indices to actual feature IDs
                     dep_ids = [created_features[idx].id for idx in indices]
-                    # SQLAlchemy JSON column accepts list directly
-                    created_features[i].dependencies = sorted(dep_ids)  # type: ignore[assignment]
+                    created_features[i].dependencies = sorted(dep_ids)  # type: ignore[assignment]  # SQLAlchemy JSON Column accepts list at runtime
                     deps_count += 1
 
             # Commit happens automatically on context manager exit
@@ -719,8 +638,6 @@ def feature_create(
     Use this when the user asks to add a new feature, capability, or test case.
     The feature will be added with the next available priority number.
 
-    Uses IMMEDIATE transaction for parallel safety.
-
     Args:
         category: Feature category for grouping (e.g., 'Authentication', 'API', 'UI')
         name: Descriptive name for the feature
@@ -731,8 +648,8 @@ def feature_create(
         JSON with the created feature details including its ID
     """
     try:
-        # Use IMMEDIATE transaction to prevent priority collisions
-        with atomic_transaction(_session_maker, "IMMEDIATE") as session:
+        # Use atomic transaction to prevent priority collisions
+        with atomic_transaction(_session_maker) as session:
             # Get the next priority atomically within the transaction
             result = session.execute(text("""
                 SELECT COALESCE(MAX(priority), 0) + 1 FROM features
@@ -773,8 +690,6 @@ def feature_add_dependency(
     The dependency_id feature must be completed before feature_id can be started.
     Validates: self-reference, existence, circular dependencies, max limit.
 
-    Uses IMMEDIATE transaction to prevent stale reads during cycle detection.
-
     Args:
         feature_id: The ID of the feature that will depend on another feature
         dependency_id: The ID of the feature that must be completed first
@@ -787,8 +702,8 @@ def feature_add_dependency(
         if feature_id == dependency_id:
             return json.dumps({"error": "A feature cannot depend on itself"})
 
-        # Use IMMEDIATE transaction for consistent cycle detection
-        with atomic_transaction(_session_maker, "IMMEDIATE") as session:
+        # Use atomic transaction for consistent cycle detection
+        with atomic_transaction(_session_maker) as session:
             feature = session.query(Feature).filter(Feature.id == feature_id).first()
             dependency = session.query(Feature).filter(Feature.id == dependency_id).first()
 
@@ -834,8 +749,6 @@ def feature_remove_dependency(
 ) -> str:
     """Remove a dependency from a feature.
 
-    Uses IMMEDIATE transaction for parallel safety.
-
     Args:
         feature_id: The ID of the feature to remove a dependency from
         dependency_id: The ID of the dependency to remove
@@ -844,8 +757,8 @@ def feature_remove_dependency(
         JSON with success status and updated dependencies list, or error message
     """
     try:
-        # Use IMMEDIATE transaction for consistent read-modify-write
-        with atomic_transaction(_session_maker, "IMMEDIATE") as session:
+        # Use atomic transaction for consistent read-modify-write
+        with atomic_transaction(_session_maker) as session:
             feature = session.query(Feature).filter(Feature.id == feature_id).first()
             if not feature:
                 return json.dumps({"error": f"Feature {feature_id} not found"})
@@ -1011,8 +924,6 @@ def feature_set_dependencies(
 
     Validates: self-reference, existence of all dependencies, circular dependencies, max limit.
 
-    Uses IMMEDIATE transaction to prevent stale reads during cycle detection.
-
     Args:
         feature_id: The ID of the feature to set dependencies for
         dependency_ids: List of feature IDs that must be completed first
@@ -1033,8 +944,8 @@ def feature_set_dependencies(
         if len(dependency_ids) != len(set(dependency_ids)):
             return json.dumps({"error": "Duplicate dependencies not allowed"})
 
-        # Use IMMEDIATE transaction for consistent cycle detection
-        with atomic_transaction(_session_maker, "IMMEDIATE") as session:
+        # Use atomic transaction for consistent cycle detection
+        with atomic_transaction(_session_maker) as session:
             feature = session.query(Feature).filter(Feature.id == feature_id).first()
             if not feature:
                 return json.dumps({"error": f"Feature {feature_id} not found"})
@@ -1048,7 +959,6 @@ def feature_set_dependencies(
             # Check for circular dependencies
             # Within IMMEDIATE transaction, snapshot is protected by write lock
             all_features = [f.to_dict() for f in session.query(Feature).all()]
-            # Temporarily update the feature's dependencies for cycle check
             test_features = []
             for f in all_features:
                 if f["id"] == feature_id:
@@ -1072,6 +982,36 @@ def feature_set_dependencies(
             })
     except Exception as e:
         return json.dumps({"error": f"Failed to set dependencies: {str(e)}"})
+
+
+@mcp.tool()
+def ask_user(
+    questions: Annotated[list[dict], Field(description="List of questions to ask, each with question, header, options (list of {label, description}), and multiSelect (bool)")]
+) -> str:
+    """Ask the user structured questions with selectable options.
+
+    Use this when you need clarification or want to offer choices to the user.
+    Each question has a short header, the question text, and 2-4 clickable options.
+    The user's selections will be returned as your next message.
+
+    Args:
+        questions: List of questions, each with:
+            - question (str): The question to ask
+            - header (str): Short label (max 12 chars)
+            - options (list): Each with label (str) and description (str)
+            - multiSelect (bool): Allow multiple selections (default false)
+
+    Returns:
+        Acknowledgment that questions were presented to the user
+    """
+    # Validate input
+    for i, q in enumerate(questions):
+        if not all(key in q for key in ["question", "header", "options"]):
+            return json.dumps({"error": f"Question at index {i} missing required fields"})
+        if len(q["options"]) < 2 or len(q["options"]) > 4:
+            return json.dumps({"error": f"Question at index {i} must have 2-4 options"})
+
+    return "Questions presented to the user. Their response will arrive as your next message."
 
 
 if __name__ == "__main__":

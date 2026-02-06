@@ -10,7 +10,6 @@ import json
 import logging
 import os
 import shutil
-import sys
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -20,44 +19,12 @@ from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 from dotenv import load_dotenv
 
 from ..schemas import ImageAttachment
-
-# Add root directory to path for imports
-ROOT_DIR = Path(__file__).parent.parent.parent
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
+from .chat_constants import ROOT_DIR, make_multimodal_message
 
 # Load environment variables from .env file if present
 load_dotenv()
 
 logger = logging.getLogger(__name__)
-
-# Environment variables to pass through to Claude CLI for API configuration
-API_ENV_VARS = [
-    "ANTHROPIC_BASE_URL",
-    "ANTHROPIC_AUTH_TOKEN",
-    "API_TIMEOUT_MS",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-]
-
-
-async def _make_multimodal_message(content_blocks: list[dict]) -> AsyncGenerator[dict, None]:
-    """
-    Create an async generator that yields a properly formatted multimodal message.
-
-    The Claude Agent SDK's query() method accepts either:
-    - A string (simple text)
-    - An AsyncIterable[dict] (for custom message formats)
-
-    This function wraps content blocks in the expected message format.
-    """
-    yield {
-        "type": "user",
-        "message": {"role": "user", "content": content_blocks},
-        "parent_tool_use_id": None,
-        "session_id": "default",
-    }
 
 
 class SpecChatSession:
@@ -128,7 +95,7 @@ class SpecChatSession:
         # Delete app_spec.txt so Claude can create it fresh
         # The SDK requires reading existing files before writing, but app_spec.txt is created new
         # Note: We keep initializer_prompt.md so Claude can read and update the template
-        from autocoder_paths import get_prompts_dir
+        from autoforge_paths import get_prompts_dir
         prompts_dir = get_prompts_dir(self.project_dir)
         app_spec_path = prompts_dir / "app_spec.txt"
         if app_spec_path.exists():
@@ -149,7 +116,7 @@ class SpecChatSession:
                 ],
             },
         }
-        from autocoder_paths import get_claude_settings_path
+        from autoforge_paths import get_claude_settings_path
         settings_file = get_claude_settings_path(self.project_dir)
         settings_file.parent.mkdir(parents=True, exist_ok=True)
         with open(settings_file, "w") as f:
@@ -173,15 +140,11 @@ class SpecChatSession:
         system_cli = shutil.which("claude")
 
         # Build environment overrides for API configuration
-        # Filter out None values for type safety
-        sdk_env: dict[str, str] = {
-            var: val for var in API_ENV_VARS
-            if (val := os.getenv(var)) is not None
-        }
+        from registry import DEFAULT_MODEL, get_effective_sdk_env
+        sdk_env = get_effective_sdk_env()
 
-        # Determine model from environment or use default
-        # This allows using alternative APIs (e.g., GLM via z.ai) that may not support Claude model names
-        model = os.getenv("ANTHROPIC_DEFAULT_OPUS_MODEL", "claude-opus-4-5-20251101")
+        # Determine model from SDK env (provider-aware) or fallback to env/default
+        model = sdk_env.get("ANTHROPIC_DEFAULT_OPUS_MODEL") or os.getenv("ANTHROPIC_DEFAULT_OPUS_MODEL", DEFAULT_MODEL)
 
         try:
             self.client = ClaudeSDKClient(
@@ -299,7 +262,7 @@ class SpecChatSession:
         # Build the message content
         if attachments and len(attachments) > 0:
             # Multimodal message: build content blocks array
-            content_blocks = []
+            content_blocks: list[dict[str, Any]] = []
 
             # Add text block if there's text
             if message:
@@ -307,20 +270,18 @@ class SpecChatSession:
 
             # Add image blocks
             for att in attachments:
-                # Build the image block - using Any for nested dict structure
-                image_block: dict[str, Any] = {
+                content_blocks.append({
                     "type": "image",
                     "source": {
                         "type": "base64",
                         "media_type": att.mimeType,
                         "data": att.base64Data,
                     }
-                }
-                content_blocks.append(image_block)
+                })
 
             # Send multimodal content to Claude using async generator format
             # The SDK's query() accepts AsyncIterable[dict] for custom message formats
-            await self.client.query(_make_multimodal_message(content_blocks))
+            await self.client.query(make_multimodal_message(content_blocks))
             logger.info(f"Sent multimodal message with {len(attachments)} image(s)")
         else:
             # Text-only message: use string format
@@ -450,20 +411,6 @@ class SpecChatSession:
                             if files_written["app_spec"] and files_written["initializer"]:
                                 logger.info("Both app_spec.txt and initializer_prompt.md verified - signaling completion")
                                 self.complete = True
-
-                                # Generate design tokens based on visual style (if not default)
-                                try:
-                                    from design_tokens import generate_design_tokens_from_spec
-                                    tokens_path = generate_design_tokens_from_spec(self.project_dir)
-                                    if tokens_path:
-                                        logger.info(f"Generated design tokens at: {tokens_path}")
-                                        yield {
-                                            "type": "file_written",
-                                            "path": str(tokens_path.relative_to(self.project_dir))
-                                        }
-                                except Exception as e:
-                                    logger.warning(f"Failed to generate design tokens: {e}")
-
                                 yield {
                                     "type": "spec_complete",
                                     "path": str(spec_path)

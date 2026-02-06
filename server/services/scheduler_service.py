@@ -107,7 +107,7 @@ class SchedulerService:
     async def _load_project_schedules(self, project_name: str, project_dir: Path) -> int:
         """Load schedules for a single project. Returns count of schedules loaded."""
         from api.database import Schedule, create_database
-        from autocoder_paths import get_features_db_path
+        from autoforge_paths import get_features_db_path
 
         # Skip detached projects - don't access their database
         if _is_project_detached(project_dir):
@@ -613,7 +613,7 @@ class SchedulerService:
             return
 
         from api.database import Schedule, ScheduleOverride, create_database
-        from autocoder_paths import get_features_db_path
+        from autoforge_paths import get_features_db_path
 
         db_path = get_features_db_path(project_dir)
         if not db_path.exists():

@@ -4,7 +4,7 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import * as api from '../lib/api'
-import type { FeatureCreate, FeatureUpdate, ModelsResponse, ProjectSettingsUpdate, ProjectSummary, Settings, SettingsUpdate } from '../lib/types'
+import type { FeatureCreate, FeatureUpdate, ModelsResponse, ProjectSettingsUpdate, ProvidersResponse, Settings, SettingsUpdate } from '../lib/types'
 
 // ============================================================================
 // Projects
@@ -75,67 +75,16 @@ export function useUpdateProjectSettings(projectName: string) {
   })
 }
 
-export function useDetachProject() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: (name: string) => api.detachProject(name),
-    onSuccess: (_data, name) => {
-      // Optimistically set is_detached=true in projects cache to prevent race condition
-      // This ensures isDetached becomes true immediately before the refetch completes
-      queryClient.setQueryData(['projects'], (oldData: ProjectSummary[] | undefined) => {
-        if (!oldData) return oldData
-        return oldData.map(p => p.name === name ? { ...p, is_detached: true } : p)
-      })
-
-      // Clear features data immediately (prevents stale cache)
-      queryClient.setQueryData(['features', name], null)
-      queryClient.setQueryData(['dependencyGraph', name], null)
-      queryClient.setQueryData(['schedules', name], null)
-      queryClient.setQueryData(['nextRun', name], null)
-
-      // Invalidate to refresh
-      queryClient.invalidateQueries({ queryKey: ['projects'] })
-      queryClient.invalidateQueries({ queryKey: ['project', name] })
-      queryClient.invalidateQueries({ queryKey: ['features', name] })
-      queryClient.invalidateQueries({ queryKey: ['schedules', name] })
-      queryClient.invalidateQueries({ queryKey: ['nextRun', name] })
-    },
-  })
-}
-
-export function useReattachProject() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: (name: string) => api.reattachProject(name),
-    onSuccess: (_data, name) => {
-      // Optimistically set is_detached=false in projects cache
-      queryClient.setQueryData(['projects'], (oldData: ProjectSummary[] | undefined) => {
-        if (!oldData) return oldData
-        return oldData.map(p => p.name === name ? { ...p, is_detached: false } : p)
-      })
-
-      // Invalidate to refresh all data
-      queryClient.invalidateQueries({ queryKey: ['projects'] })
-      queryClient.invalidateQueries({ queryKey: ['project', name] })
-      queryClient.invalidateQueries({ queryKey: ['features', name] })
-      queryClient.invalidateQueries({ queryKey: ['schedules', name] })
-      queryClient.invalidateQueries({ queryKey: ['nextRun', name] })
-    },
-  })
-}
-
 // ============================================================================
 // Features
 // ============================================================================
 
-export function useFeatures(projectName: string | null, isDetached: boolean = false) {
+export function useFeatures(projectName: string | null) {
   return useQuery({
     queryKey: ['features', projectName],
     queryFn: () => api.listFeatures(projectName!),
-    enabled: !!projectName && !isDetached,
-    refetchInterval: isDetached ? false : 5000, // Refetch every 5 seconds for real-time updates
+    enabled: !!projectName,
+    refetchInterval: 5000, // Refetch every 5 seconds for real-time updates
   })
 }
 
@@ -305,18 +254,41 @@ export function useValidatePath() {
 // Default models response for placeholder (until API responds)
 const DEFAULT_MODELS: ModelsResponse = {
   models: [
-    { id: 'claude-opus-4-5-20251101', name: 'Claude Opus 4.5' },
-    { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet 4.5' },
+    { id: 'claude-opus-4-6', name: 'Claude Opus' },
+    { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet' },
   ],
-  default: 'claude-opus-4-5-20251101',
+  default: 'claude-opus-4-6',
 }
 
 const DEFAULT_SETTINGS: Settings = {
   yolo_mode: false,
-  model: 'claude-opus-4-5-20251101',
+  model: 'claude-opus-4-6',
   glm_mode: false,
   ollama_mode: false,
   testing_agent_ratio: 1,
+  playwright_headless: true,
+  batch_size: 3,
+  api_provider: 'claude',
+  api_base_url: null,
+  api_has_auth_token: false,
+  api_model: null,
+}
+
+const DEFAULT_PROVIDERS: ProvidersResponse = {
+  providers: [
+    { id: 'claude', name: 'Claude (Anthropic)', base_url: null, models: DEFAULT_MODELS.models, default_model: 'claude-opus-4-6', requires_auth: false },
+  ],
+  current: 'claude',
+}
+
+export function useAvailableProviders() {
+  return useQuery({
+    queryKey: ['available-providers'],
+    queryFn: api.getAvailableProviders,
+    staleTime: 300000,
+    retry: 1,
+    placeholderData: DEFAULT_PROVIDERS,
+  })
 }
 
 export function useAvailableModels() {
@@ -368,6 +340,8 @@ export function useUpdateSettings() {
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['settings'] })
+      queryClient.invalidateQueries({ queryKey: ['available-models'] })
+      queryClient.invalidateQueries({ queryKey: ['available-providers'] })
     },
   })
 }

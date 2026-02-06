@@ -7,8 +7,6 @@ WebSocket and REST endpoints for the read-only project assistant.
 
 import json
 import logging
-import re
-from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
@@ -27,29 +25,12 @@ from ..services.assistant_database import (
     get_conversation,
     get_conversations,
 )
+from ..utils.project_helpers import get_project_path as _get_project_path
+from ..utils.validation import validate_project_name
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/assistant", tags=["assistant-chat"])
-
-# Root directory
-ROOT_DIR = Path(__file__).parent.parent.parent
-
-
-def _get_project_path(project_name: str) -> Optional[Path]:
-    """Get project path from registry."""
-    import sys
-    root = Path(__file__).parent.parent.parent
-    if str(root) not in sys.path:
-        sys.path.insert(0, str(root))
-
-    from registry import get_project_path
-    return get_project_path(project_name)
-
-
-def validate_project_name(name: str) -> bool:
-    """Validate project name to prevent path traversal."""
-    return bool(re.match(r'^[a-zA-Z0-9_-]{1,50}$', name))
 
 
 # ============================================================================
@@ -226,30 +207,38 @@ async def assistant_chat_websocket(websocket: WebSocket, project_name: str):
     Client -> Server:
     - {"type": "start", "conversation_id": int | null} - Start/resume session
     - {"type": "message", "content": "..."} - Send user message
+    - {"type": "answer", "answers": {...}} - Answer to structured questions
     - {"type": "ping"} - Keep-alive ping
 
     Server -> Client:
     - {"type": "conversation_created", "conversation_id": int} - New conversation created
     - {"type": "text", "content": "..."} - Text chunk from Claude
     - {"type": "tool_call", "tool": "...", "input": {...}} - Tool being called
+    - {"type": "question", "questions": [...]} - Structured questions for user
     - {"type": "response_done"} - Response complete
     - {"type": "error", "content": "..."} - Error message
     - {"type": "pong"} - Keep-alive pong
     """
-    if not validate_project_name(project_name):
+    # Always accept WebSocket first to avoid opaque 403 errors
+    await websocket.accept()
+
+    try:
+        project_name = validate_project_name(project_name)
+    except HTTPException:
+        await websocket.send_json({"type": "error", "content": "Invalid project name"})
         await websocket.close(code=4000, reason="Invalid project name")
         return
 
     project_dir = _get_project_path(project_name)
     if not project_dir:
+        await websocket.send_json({"type": "error", "content": "Project not found in registry"})
         await websocket.close(code=4004, reason="Project not found in registry")
         return
 
     if not project_dir.exists():
+        await websocket.send_json({"type": "error", "content": "Project directory not found"})
         await websocket.close(code=4004, reason="Project directory not found")
         return
-
-    await websocket.accept()
     logger.info(f"Assistant WebSocket connected for project: {project_name}")
 
     session: Optional[AssistantChatSession] = None
@@ -314,6 +303,34 @@ async def assistant_chat_websocket(websocket: WebSocket, project_name: str):
 
                     # Stream Claude's response
                     async for chunk in session.send_message(user_content):
+                        await websocket.send_json(chunk)
+
+                elif msg_type == "answer":
+                    # User answered a structured question
+                    if not session:
+                        session = get_session(project_name)
+                        if not session:
+                            await websocket.send_json({
+                                "type": "error",
+                                "content": "No active session. Send 'start' first."
+                            })
+                            continue
+
+                    # Format the answers as a natural response
+                    answers = message.get("answers", {})
+                    if isinstance(answers, dict):
+                        response_parts = []
+                        for question_idx, answer_value in answers.items():
+                            if isinstance(answer_value, list):
+                                response_parts.append(", ".join(answer_value))
+                            else:
+                                response_parts.append(str(answer_value))
+                        user_response = "; ".join(response_parts) if response_parts else "OK"
+                    else:
+                        user_response = str(answers)
+
+                    # Stream Claude's response
+                    async for chunk in session.send_message(user_response):
                         await websocket.send_json(chunk)
 
                 else:

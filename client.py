@@ -7,7 +7,6 @@ Functions for creating and configuring the Claude Agent SDK client.
 
 import json
 import os
-import platform
 import re
 import shutil
 import sys
@@ -17,9 +16,7 @@ from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 from claude_agent_sdk.types import HookContext, HookInput, HookMatcher, SyncHookJSONOutput
 from dotenv import load_dotenv
 
-from app_spec_parser import get_ui_config_from_spec
-from security import bash_security_hook
-from structured_logging import get_logger
+from security import SENSITIVE_DIRECTORIES, bash_security_hook
 
 # Load environment variables from .env file if present
 load_dotenv()
@@ -34,50 +31,23 @@ DEFAULT_PLAYWRIGHT_HEADLESS = True
 # Firefox is recommended for lower CPU usage
 DEFAULT_PLAYWRIGHT_BROWSER = "firefox"
 
-# Environment variables to pass through to Claude CLI for API configuration
-# These allow using alternative API endpoints (e.g., GLM via z.ai, Vertex AI) without
-# affecting the user's global Claude Code settings
-API_ENV_VARS = [
-    "ANTHROPIC_BASE_URL",              # Custom API endpoint (e.g., https://api.z.ai/api/anthropic)
-    "ANTHROPIC_AUTH_TOKEN",            # API authentication token
-    "API_TIMEOUT_MS",                  # Request timeout in milliseconds
-    "ANTHROPIC_DEFAULT_SONNET_MODEL",  # Model override for Sonnet
-    "ANTHROPIC_DEFAULT_OPUS_MODEL",    # Model override for Opus
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL",   # Model override for Haiku
-    # Vertex AI configuration
-    "CLAUDE_CODE_USE_VERTEX",          # Enable Vertex AI mode (set to "1")
-    "CLOUD_ML_REGION",                 # GCP region (e.g., us-east5)
-    "ANTHROPIC_VERTEX_PROJECT_ID",     # GCP project ID
-]
-
 # Extra read paths for cross-project file access (read-only)
 # Set EXTRA_READ_PATHS environment variable with comma-separated absolute paths
 # Example: EXTRA_READ_PATHS=/Volumes/Data/dev,/Users/shared/libs
 EXTRA_READ_PATHS_VAR = "EXTRA_READ_PATHS"
 
-# Sensitive directories that should never be allowed via EXTRA_READ_PATHS
-# These contain credentials, keys, or system-critical files
-EXTRA_READ_PATHS_BLOCKLIST = {
-    ".ssh",
-    ".aws",
-    ".azure",
-    ".kube",
-    ".gnupg",
-    ".gpg",
-    ".password-store",
-    ".docker",
-    ".config/gcloud",
-    ".npmrc",
-    ".pypirc",
-    ".netrc",
-}
+# Sensitive directories that should never be allowed via EXTRA_READ_PATHS.
+# Delegates to the canonical SENSITIVE_DIRECTORIES set in security.py so that
+# this blocklist and the filesystem browser API share a single source of truth.
+EXTRA_READ_PATHS_BLOCKLIST = SENSITIVE_DIRECTORIES
 
 def convert_model_for_vertex(model: str) -> str:
     """
     Convert model name format for Vertex AI compatibility.
 
-    Vertex AI uses @ to separate model name from version (e.g., claude-opus-4-5@20251101)
-    while the Anthropic API uses - (e.g., claude-opus-4-5-20251101).
+    Vertex AI uses @ to separate model name from version (e.g., claude-sonnet-4-5@20250929)
+    while the Anthropic API uses - (e.g., claude-sonnet-4-5-20250929).
+    Models without a date suffix (e.g., claude-opus-4-6) pass through unchanged.
 
     Args:
         model: Model name in Anthropic format (with hyphens)
@@ -91,7 +61,7 @@ def convert_model_for_vertex(model: str) -> str:
         return model
 
     # Pattern: claude-{name}-{version}-{date} -> claude-{name}-{version}@{date}
-    # Example: claude-opus-4-5-20251101 -> claude-opus-4-5@20251101
+    # Example: claude-sonnet-4-5-20250929 -> claude-sonnet-4-5@20250929
     # The date is always 8 digits at the end
     match = re.match(r'^(claude-.+)-(\d{8})$', model)
     if match:
@@ -137,39 +107,6 @@ def get_playwright_browser() -> str:
               f"Defaulting to {DEFAULT_PLAYWRIGHT_BROWSER}")
         return DEFAULT_PLAYWRIGHT_BROWSER
     return value
-
-
-def get_npx_command() -> str:
-    """
-    Get the npx command that works on all platforms.
-
-    On Windows, npx is often installed as npx.cmd and may not be found
-    via simple 'npx' lookup. This function handles platform-specific resolution.
-
-    Returns:
-        Path to npx executable.
-
-    Raises:
-        RuntimeError: If npx cannot be found.
-    """
-    # Try standard npx first
-    npx_path = shutil.which("npx")
-    if npx_path:
-        return npx_path
-
-    # On Windows, try npx.cmd
-    if platform.system() == "Windows":
-        npx_cmd = shutil.which("npx.cmd")
-        if npx_cmd:
-            return npx_cmd
-
-    raise RuntimeError("npx not found. Install Node.js and ensure it's in PATH.")
-
-
-# Version pinning for UI MCP servers to avoid breaking changes
-# Can be overridden via environment variables
-SHADCN_MCP_VERSION = os.getenv("MCP_SHADCN_VERSION", "latest")
-ARK_MCP_VERSION = os.getenv("MCP_ARK_VERSION", "latest")
 
 
 def get_extra_read_paths() -> list[Path]:
@@ -245,43 +182,55 @@ def get_extra_read_paths() -> list[Path]:
     return validated_paths
 
 
-# Feature MCP tools for feature/test management
-FEATURE_MCP_TOOLS = [
-    # Core feature operations
+# Per-agent-type MCP tool lists.
+# Only expose the tools each agent type actually needs, reducing tool schema
+# overhead and preventing agents from calling tools meant for other roles.
+#
+# Tools intentionally omitted from ALL agent lists (UI/orchestrator only):
+#   feature_get_ready, feature_get_blocked, feature_get_graph,
+#   feature_remove_dependency
+#
+# The ghost tool "feature_release_testing" was removed entirely -- it was
+# listed here but never implemented in mcp_server/feature_mcp.py.
+
+CODING_AGENT_TOOLS = [
     "mcp__features__feature_get_stats",
-    "mcp__features__feature_get_by_id",  # Get assigned feature details
-    "mcp__features__feature_get_summary",  # Lightweight: id, name, status, deps only
+    "mcp__features__feature_get_by_id",
+    "mcp__features__feature_get_summary",
+    "mcp__features__feature_claim_and_get",
     "mcp__features__feature_mark_in_progress",
-    "mcp__features__feature_claim_and_get",  # Atomic claim + get details
     "mcp__features__feature_mark_passing",
-    "mcp__features__feature_mark_failing",  # Mark regression detected
+    "mcp__features__feature_mark_failing",
     "mcp__features__feature_skip",
+    "mcp__features__feature_clear_in_progress",
+]
+
+TESTING_AGENT_TOOLS = [
+    "mcp__features__feature_get_stats",
+    "mcp__features__feature_get_by_id",
+    "mcp__features__feature_get_summary",
+    "mcp__features__feature_mark_passing",
+    "mcp__features__feature_mark_failing",
+]
+
+INITIALIZER_AGENT_TOOLS = [
+    "mcp__features__feature_get_stats",
     "mcp__features__feature_create_bulk",
     "mcp__features__feature_create",
-    "mcp__features__feature_clear_in_progress",
-    "mcp__features__feature_verify_quality",  # Run quality checks (lint, type-check)
-    # Dependency management
     "mcp__features__feature_add_dependency",
-    "mcp__features__feature_remove_dependency",
     "mcp__features__feature_set_dependencies",
-    # Query tools
-    "mcp__features__feature_get_ready",
-    "mcp__features__feature_get_blocked",
-    "mcp__features__feature_get_graph",
 ]
 
-# UI Component MCP tools (shadcn-ui, ark-ui)
-# These tools are only available when the project uses a UI library with MCP support
-UI_MCP_TOOLS = [
-    "mcp__ui_components__list_components",
-    "mcp__ui_components__list_examples",
-    "mcp__ui_components__get_example",
-    "mcp__ui_components__styling_guide",
-    "mcp__ui_components__get_component",
-    "mcp__ui_components__search_components",
-]
+# Union of all agent tool lists -- used for permissions (all tools remain
+# *permitted* so the MCP server can respond, but only the agent-type-specific
+# list is included in allowed_tools, which controls what the LLM sees).
+ALL_FEATURE_MCP_TOOLS = sorted(
+    set(CODING_AGENT_TOOLS) | set(TESTING_AGENT_TOOLS) | set(INITIALIZER_AGENT_TOOLS)
+)
 
-# Playwright MCP tools for browser automation
+# Playwright MCP tools for browser automation.
+# Full set of tools for comprehensive UI testing including drag-and-drop,
+# hover menus, file uploads, tab management, etc.
 PLAYWRIGHT_TOOLS = [
     # Core navigation & screenshots
     "mcp__playwright__browser_navigate",
@@ -294,9 +243,10 @@ PLAYWRIGHT_TOOLS = [
     "mcp__playwright__browser_type",
     "mcp__playwright__browser_fill_form",
     "mcp__playwright__browser_select_option",
-    "mcp__playwright__browser_hover",
-    "mcp__playwright__browser_drag",
     "mcp__playwright__browser_press_key",
+    "mcp__playwright__browser_drag",
+    "mcp__playwright__browser_hover",
+    "mcp__playwright__browser_file_upload",
 
     # JavaScript & debugging
     "mcp__playwright__browser_evaluate",
@@ -305,16 +255,17 @@ PLAYWRIGHT_TOOLS = [
     "mcp__playwright__browser_network_requests",
 
     # Browser management
-    "mcp__playwright__browser_close",
     "mcp__playwright__browser_resize",
-    "mcp__playwright__browser_tabs",
     "mcp__playwright__browser_wait_for",
     "mcp__playwright__browser_handle_dialog",
-    "mcp__playwright__browser_file_upload",
     "mcp__playwright__browser_install",
+    "mcp__playwright__browser_close",
+    "mcp__playwright__browser_tabs",
 ]
 
-# Built-in tools
+# Built-in tools available to agents.
+# WebFetch and WebSearch are included so coding agents can look up current
+# documentation for frameworks and libraries they are implementing.
 BUILTIN_TOOLS = [
     "Read",
     "Write",
@@ -332,6 +283,7 @@ def create_client(
     model: str,
     yolo_mode: bool = False,
     agent_id: str | None = None,
+    agent_type: str = "coding",
 ):
     """
     Create a Claude Agent SDK client with multi-layered security.
@@ -342,6 +294,8 @@ def create_client(
         yolo_mode: If True, skip Playwright MCP server for rapid prototyping
         agent_id: Optional unique identifier for browser isolation in parallel mode.
                   When provided, each agent gets its own browser profile.
+        agent_type: One of "coding", "testing", or "initializer". Controls which
+                    MCP tools are exposed and the max_turns limit.
 
     Returns:
         Configured ClaudeSDKClient (from claude_agent_sdk)
@@ -355,27 +309,34 @@ def create_client(
     Note: Authentication is handled by start.bat/start.sh before this runs.
     The Claude SDK auto-detects credentials from the Claude CLI configuration
     """
-    # Initialize logger for client configuration events
-    logger = get_logger(project_dir, agent_id="client", console_output=False)
+    # Select the feature MCP tools appropriate for this agent type
+    feature_tools_map = {
+        "coding": CODING_AGENT_TOOLS,
+        "testing": TESTING_AGENT_TOOLS,
+        "initializer": INITIALIZER_AGENT_TOOLS,
+    }
+    feature_tools = feature_tools_map.get(agent_type, CODING_AGENT_TOOLS)
 
-    # Cache UI config once to avoid repeated file reads
-    # This is used for both allowed_tools and MCP server configuration
-    ui_mcp_disabled = os.getenv("DISABLE_UI_MCP", "").lower() == "true"
-    ui_config = None if ui_mcp_disabled else get_ui_config_from_spec(project_dir)
-    has_ui_mcp = ui_config is not None and ui_config.get("has_mcp", False)
+    # Select max_turns based on agent type:
+    #   - coding/initializer: 300 turns (complex multi-step implementation)
+    #   - testing: 100 turns (focused verification of a single feature)
+    max_turns_map = {
+        "coding": 300,
+        "testing": 100,
+        "initializer": 300,
+    }
+    max_turns = max_turns_map.get(agent_type, 300)
 
-    # Build allowed tools list based on mode
-    # In YOLO mode, exclude Playwright tools for faster prototyping
-    allowed_tools = [*BUILTIN_TOOLS, *FEATURE_MCP_TOOLS]
+    # Build allowed tools list based on mode and agent type.
+    # In YOLO mode, exclude Playwright tools for faster prototyping.
+    allowed_tools = [*BUILTIN_TOOLS, *feature_tools]
     if not yolo_mode:
         allowed_tools.extend(PLAYWRIGHT_TOOLS)
 
-    # Add UI MCP tools if the project uses a library with MCP support
-    # UI MCP is available in both standard and YOLO mode
-    if has_ui_mcp:
-        allowed_tools.extend(UI_MCP_TOOLS)
-
-    # Build permissions list
+    # Build permissions list.
+    # We permit ALL feature MCP tools at the security layer (so the MCP server
+    # can respond if called), but the LLM only *sees* the agent-type-specific
+    # subset via allowed_tools above.
     permissions_list = [
         # Allow all file operations within the project directory
         "Read(./**)",
@@ -386,11 +347,11 @@ def create_client(
         # Bash permission granted here, but actual commands are validated
         # by the bash_security_hook (see security.py for allowed commands)
         "Bash(*)",
-        # Allow web tools for documentation lookup
-        "WebFetch",
-        "WebSearch",
+        # Allow web tools for looking up framework/library documentation
+        "WebFetch(*)",
+        "WebSearch(*)",
         # Allow Feature MCP tools for feature management
-        *FEATURE_MCP_TOOLS,
+        *ALL_FEATURE_MCP_TOOLS,
     ]
 
     # Add extra read paths from environment variable (read-only access)
@@ -405,10 +366,6 @@ def create_client(
     if not yolo_mode:
         # Allow Playwright MCP tools for browser automation (standard mode only)
         permissions_list.extend(PLAYWRIGHT_TOOLS)
-
-    # Add UI MCP tools to permissions if available
-    if has_ui_mcp:
-        permissions_list.extend(UI_MCP_TOOLS)
 
     # Create comprehensive security settings
     # Note: Using relative paths ("./**") restricts access to project directory
@@ -425,13 +382,12 @@ def create_client(
     project_dir.mkdir(parents=True, exist_ok=True)
 
     # Write settings to a file in the project directory
-    from autocoder_paths import get_claude_settings_path
+    from autoforge_paths import get_claude_settings_path
     settings_file = get_claude_settings_path(project_dir)
     settings_file.parent.mkdir(parents=True, exist_ok=True)
     with open(settings_file, "w") as f:
         json.dump(security_settings, f, indent=2)
 
-    logger.info("Settings file written", file_path=str(settings_file))
     print(f"Created security settings at {settings_file}")
     print("   - Sandbox enabled (OS-level bash isolation)")
     print(f"   - Filesystem restricted to: {project_dir.resolve()}")
@@ -492,62 +448,12 @@ def create_client(
             "args": playwright_args,
         }
 
-    # UI Components MCP server (available in both standard and YOLO mode)
-    # Only added for libraries with MCP support (shadcn-ui, ark-ui)
-    if has_ui_mcp and ui_config:
-        library = ui_config.get("library", "")
-        framework = ui_config.get("framework", "react")
-
-        try:
-            npx_cmd = get_npx_command()
-
-            if library == "shadcn-ui":
-                # shadcn/ui MCP server for React components
-                # Uses GitHub API - benefits from GITHUB_PERSONAL_ACCESS_TOKEN for rate limits
-                ui_mcp_args = [
-                    "-y",
-                    "--prefer-offline",
-                    f"@jpisnice/shadcn-ui-mcp-server@{SHADCN_MCP_VERSION}",
-                    "--framework", framework,
-                ]
-                ui_mcp_config: dict = {
-                    "command": npx_cmd,
-                    "args": ui_mcp_args,
-                }
-                # Only add env if there are environment variables to pass
-                github_token = os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN")
-                if github_token:
-                    ui_mcp_config["env"] = {"GITHUB_TOKEN": github_token}
-
-                mcp_servers["ui_components"] = ui_mcp_config
-                print(f"   - UI MCP: shadcn/ui ({framework})")
-
-            elif library == "ark-ui":
-                # Ark UI MCP server for multi-framework headless components
-                ui_mcp_args = [
-                    "-y",
-                    "--prefer-offline",
-                    f"@ark-ui/mcp@{ARK_MCP_VERSION}",
-                ]
-                mcp_servers["ui_components"] = {
-                    "command": npx_cmd,
-                    "args": ui_mcp_args,
-                }
-                print(f"   - UI MCP: Ark UI ({framework})")
-
-        except RuntimeError as e:
-            # npx not found - graceful degradation
-            print(f"   - Warning: UI MCP disabled - {e}")
-
     # Build environment overrides for API endpoint configuration
-    # These override system env vars for the Claude CLI subprocess,
-    # allowing AutoCoder to use alternative APIs (e.g., GLM) without
-    # affecting the user's global Claude Code settings
-    sdk_env = {}
-    for var in API_ENV_VARS:
-        value = os.getenv(var)
-        if value:
-            sdk_env[var] = value
+    # Uses get_effective_sdk_env() which reads provider settings from the database,
+    # ensuring UI-configured alternative providers (GLM, Ollama, Kimi, Custom) propagate
+    # correctly to the Claude CLI subprocess
+    from registry import get_effective_sdk_env
+    sdk_env = get_effective_sdk_env()
 
     # Detect alternative API mode (Ollama, GLM, or Vertex AI)
     base_url = sdk_env.get("ANTHROPIC_BASE_URL", "")
@@ -557,7 +463,6 @@ def create_client(
     model = convert_model_for_vertex(model)
     if sdk_env:
         print(f"   - API overrides: {', '.join(sdk_env.keys())}")
-        logger.info("API overrides configured", is_ollama=is_ollama, overrides=list(sdk_env.keys()))
         if is_vertex:
             project_id = sdk_env.get("ANTHROPIC_VERTEX_PROJECT_ID", "unknown")
             region = sdk_env.get("CLOUD_ML_REGION", "unknown")
@@ -575,9 +480,10 @@ def create_client(
         context["project_dir"] = str(project_dir.resolve())
         return await bash_security_hook(input_data, tool_use_id, context)
 
-    # PreCompact hook for logging and customizing context compaction
+    # PreCompact hook for logging and customizing context compaction.
     # Compaction is handled automatically by Claude Code CLI when context approaches limits.
-    # This hook allows us to log when compaction occurs and optionally provide custom instructions.
+    # This hook provides custom instructions that guide the summarizer to preserve
+    # critical workflow state while discarding verbose/redundant content.
     async def pre_compact_hook(
         input_data: HookInput,
         tool_use_id: str | None,
@@ -590,8 +496,9 @@ def create_client(
         - "auto": Automatic compaction when context approaches token limits
         - "manual": User-initiated compaction via /compact command
 
-        The hook can customize compaction via hookSpecificOutput:
-        - customInstructions: String with focus areas for summarization
+        Returns custom instructions that guide the compaction summarizer to:
+        1. Preserve critical workflow state (feature ID, modified files, test results)
+        2. Discard verbose content (screenshots, long grep outputs, repeated reads)
         """
         trigger = input_data.get("trigger", "auto")
         custom_instructions = input_data.get("custom_instructions")
@@ -602,28 +509,53 @@ def create_client(
             print("[Context] Manual compaction requested")
 
         if custom_instructions:
-            print(f"[Context] Custom instructions: {custom_instructions}")
+            print(f"[Context] Custom instructions provided: {custom_instructions}")
 
-        # Return empty dict to allow compaction to proceed with default behavior
-        # To customize, return:
-        # {
-        #     "hookSpecificOutput": {
-        #         "hookEventName": "PreCompact",
-        #         "customInstructions": "Focus on preserving file paths and test results"
-        #     }
-        # }
-        return SyncHookJSONOutput()
+        # Build compaction instructions that preserve workflow-critical context
+        # while discarding verbose content that inflates token usage.
+        #
+        # The summarizer receives these instructions and uses them to decide
+        # what to keep vs. discard during context compaction.
+        compaction_guidance = "\n".join([
+            "## PRESERVE (critical workflow state)",
+            "- Current feature ID, feature name, and feature status (pending/in_progress/passing/failing)",
+            "- List of all files created or modified during this session, with their paths",
+            "- Last test/lint/type-check results: command run, pass/fail status, and key error messages",
+            "- Current step in the workflow (e.g., implementing, testing, fixing lint errors)",
+            "- Any dependency information (which features block this one)",
+            "- Git operations performed (commits, branches created)",
+            "- MCP tool call results (feature_claim_and_get, feature_mark_passing, etc.)",
+            "- Key architectural decisions made during this session",
+            "",
+            "## DISCARD (verbose content safe to drop)",
+            "- Full screenshot base64 data (just note that a screenshot was taken and what it showed)",
+            "- Long grep/find/glob output listings (summarize to: searched for X, found Y relevant files)",
+            "- Repeated file reads of the same file (keep only the latest read or a summary of changes)",
+            "- Full file contents from Read tool (summarize to: read file X, key sections were Y)",
+            "- Verbose npm/pip install output (just note: dependencies installed successfully/failed)",
+            "- Full lint/type-check output when passing (just note: lint passed with no errors)",
+            "- Browser console message dumps (summarize to: N errors found, key error was X)",
+            "- Redundant tool result confirmations ([Done] markers)",
+        ])
 
-    # Log client creation
-    logger.info(
-        "Client created",
-        model=model,
-        yolo_mode=yolo_mode,
-        agent_id=agent_id,
-        is_alternative_api=is_alternative_api,
-        max_turns=1000,
-    )
+        print("[Context] Applying custom compaction instructions (preserve workflow state, discard verbose content)")
 
+        # The SDK's HookSpecificOutput union type does not yet include a
+        # PreCompactHookSpecificOutput variant, but the CLI protocol accepts
+        # {"hookEventName": "PreCompact", "customInstructions": "..."}.
+        # The dict is serialized to JSON and sent to the CLI process directly,
+        # so the runtime behavior is correct despite the type mismatch.
+        return SyncHookJSONOutput(
+            hookSpecificOutput={  # type: ignore[typeddict-item]
+                "hookEventName": "PreCompact",
+                "customInstructions": compaction_guidance,
+            }
+        )
+
+    # PROMPT CACHING: The Claude Code CLI applies cache_control breakpoints internally.
+    # Our system_prompt benefits from automatic caching without explicit configuration.
+    # If explicit cache_control is needed, the SDK would need to accept content blocks
+    # with cache_control fields (not currently supported in v0.1.x).
     return ClaudeSDKClient(
         options=ClaudeAgentOptions(
             model=model,
@@ -632,7 +564,7 @@ def create_client(
             setting_sources=["project"],  # Enable skills, commands, and CLAUDE.md from project dir
             max_buffer_size=10 * 1024 * 1024,  # 10MB for large Playwright screenshots
             allowed_tools=allowed_tools,
-            mcp_servers=mcp_servers,  # type: ignore[arg-type]
+            mcp_servers=mcp_servers,  # type: ignore[arg-type]  # SDK accepts dict config at runtime
             hooks={
                 "PreToolUse": [
                     HookMatcher(matcher="Bash", hooks=[bash_hook_with_context]),
@@ -644,7 +576,7 @@ def create_client(
                     HookMatcher(hooks=[pre_compact_hook]),
                 ],
             },
-            max_turns=1000,
+            max_turns=max_turns,
             cwd=str(project_dir.resolve()),
             settings=str(settings_file.resolve()),  # Use absolute path
             env=sdk_env,  # Pass API configuration overrides to CLI subprocess
@@ -662,7 +594,7 @@ def create_client(
             # parameters. Instead, context is managed via:
             # 1. betas=["context-1m-2025-08-07"] - Extended context window
             # 2. PreCompact hook - Intercept and customize compaction behavior
-            # 3. max_turns - Limit conversation turns (set to 1000 for long sessions)
+            # 3. max_turns - Limit conversation turns (per agent type: coding=300, testing=100)
             #
             # Future SDK versions may add explicit compaction controls. When available,
             # consider adding:
