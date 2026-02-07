@@ -113,7 +113,7 @@ AUTOFORGE_ROOT_PATTERNS = [
 class FileEntry(TypedDict):
     """Type for manifest file entry."""
     path: str
-    type: str  # "file" or "directory"
+    type: str  # "file", "directory", or "symlink"
     size: int
     checksum: str | None  # MD5 for files, None for directories
     file_count: int | None  # Number of files for directories
@@ -391,7 +391,17 @@ def create_backup(
     for file_path in files:
         relative_path = file_path.relative_to(project_dir)
 
-        if file_path.is_dir():
+        if file_path.is_symlink():
+            # Handle symlinks before is_dir() which follows symlinks
+            manifest_files.append({
+                "path": str(relative_path),
+                "type": "symlink",
+                "size": 0,
+                "checksum": None,
+                "file_count": None,
+            })
+            total_file_count += 1
+        elif file_path.is_dir():
             size, count = get_directory_info(file_path)
             manifest_files.append({
                 "path": str(relative_path),
