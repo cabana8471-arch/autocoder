@@ -83,10 +83,8 @@ export function ProjectSelector({
 
   const handleConfirmDetach = async () => {
     if (!projectToDetach) return
-
     try {
-      const result = await detachProject.mutateAsync(projectToDetach)
-      console.log(`Project detached: ${result.files_moved} files moved to backup`)
+      await detachProject.mutateAsync(projectToDetach)
       setProjectToDetach(null)
     } catch (error) {
       console.error('Failed to detach project:', error)
@@ -96,10 +94,8 @@ export function ProjectSelector({
 
   const handleConfirmReattach = async () => {
     if (!projectToReattach) return
-
     try {
-      const result = await reattachProject.mutateAsync(projectToReattach)
-      console.log(`Project reattached: ${result.files_restored} files restored`)
+      await reattachProject.mutateAsync(projectToReattach)
       setProjectToReattach(null)
     } catch (error) {
       console.error('Failed to reattach project:', error)
@@ -154,11 +150,9 @@ export function ProjectSelector({
                     <FolderOpen size={16} className="shrink-0" />
                     <span className="truncate">{project.name}</span>
                     {project.is_detached && (
-                      <Badge variant="outline" className="shrink-0 text-xs bg-warning/10 text-warning border-warning/30">
-                        DETACHED
-                      </Badge>
+                      <Badge variant="secondary" className="text-[10px] px-1 py-0 shrink-0">DETACHED</Badge>
                     )}
-                    {project.stats.total > 0 && !project.is_detached && (
+                    {!project.is_detached && project.stats.total > 0 && (
                       <span className="text-sm font-mono text-muted-foreground ml-auto shrink-0">
                         {project.stats.passing}/{project.stats.total}
                       </span>
@@ -171,7 +165,7 @@ export function ProjectSelector({
                         size="icon-xs"
                         onClick={(e: React.MouseEvent) => handleReattachClick(e, project.name)}
                         className="text-muted-foreground hover:text-primary"
-                        title="Reattach project (restore Autocoder files)"
+                        title="Reattach project"
                       >
                         <Link2 size={14} />
                       </Button>
@@ -180,8 +174,8 @@ export function ProjectSelector({
                         variant="ghost"
                         size="icon-xs"
                         onClick={(e: React.MouseEvent) => handleDetachClick(e, project.name)}
-                        className="text-muted-foreground hover:text-warning"
-                        title="Detach project (move Autocoder files to backup)"
+                        className="text-muted-foreground hover:text-orange-500"
+                        title="Detach project"
                       >
                         <Unlink size={14} />
                       </Button>
@@ -245,10 +239,10 @@ export function ProjectSelector({
       <ConfirmDialog
         isOpen={projectToDetach !== null}
         title="Detach Project"
-        message={`This will move all Autocoder files for "${projectToDetach}" to a backup folder. Claude Code will have full access without restrictions. You can reattach later to continue with Autocoder.`}
+        message={`Detach "${projectToDetach}"? This will move all AutoForge files (features database, prompts, settings) to a backup directory, leaving only your application code. You can reattach later to restore everything.`}
         confirmLabel="Detach"
         cancelLabel="Cancel"
-        variant="warning"
+        variant="danger"
         isLoading={detachProject.isPending}
         onConfirm={handleConfirmDetach}
         onCancel={() => setProjectToDetach(null)}
@@ -258,7 +252,7 @@ export function ProjectSelector({
       <ConfirmDialog
         isOpen={projectToReattach !== null}
         title="Reattach Project"
-        message={`This will restore all Autocoder files for "${projectToReattach}" from backup. The project will return to managed mode with security restrictions.`}
+        message={`Reattach "${projectToReattach}"? This will restore all AutoForge files (features database, prompts, settings) from the backup directory.`}
         confirmLabel="Reattach"
         cancelLabel="Cancel"
         variant="warning"
@@ -266,6 +260,7 @@ export function ProjectSelector({
         onConfirm={handleConfirmReattach}
         onCancel={() => setProjectToReattach(null)}
       />
+
     </div>
   )
 }

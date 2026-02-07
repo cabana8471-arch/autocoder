@@ -107,6 +107,6 @@ export function useNextScheduledRun(projectName: string | null, isDetached: bool
     queryKey: ['nextRun', projectName],
     queryFn: () => api.getNextScheduledRun(projectName!),
     enabled: !!projectName && !isDetached,
-    refetchInterval: isDetached ? false : 30000, // Refresh every 30 seconds
+    refetchInterval: isDetached ? false : 30000,
   })
 }

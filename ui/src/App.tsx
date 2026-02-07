@@ -78,25 +78,23 @@ function App() {
   const queryClient = useQueryClient()
   const { data: projects, isLoading: projectsLoading } = useProjects()
 
-  // Get selected project data FIRST (needed for isDetached check)
+  // Get selected project data
   const selectedProjectData = projects?.find(p => p.name === selectedProject)
-  // While projects are loading, treat as detached to prevent premature API calls
-  const isDetached = projectsLoading ? true : (selectedProjectData?.is_detached ?? false)
   const hasSpec = selectedProjectData?.has_spec ?? true
+  const isDetached = projectsLoading ? true : (selectedProjectData?.is_detached ?? false)
 
-  // Now use features with detach flag
   const { data: features } = useFeatures(selectedProject, isDetached)
   const { data: settings } = useSettings()
   useAgentStatus(selectedProject) // Keep polling for status updates
   const wsState = useProjectWebSocket(selectedProject)
   const { theme, setTheme, darkMode, toggleDarkMode, themes } = useTheme()
 
-  // Fetch graph data when in graph view (disabled when detached)
+  // Fetch graph data when in graph view
   const { data: graphData } = useQuery({
     queryKey: ['dependencyGraph', selectedProject],
     queryFn: () => getDependencyGraph(selectedProject!),
     enabled: !!selectedProject && viewMode === 'graph' && !isDetached,
-    refetchInterval: isDetached ? false : 5000, // Refresh every 5 seconds
+    refetchInterval: 5000, // Refresh every 5 seconds
   })
 
   // Persist view mode to localStorage

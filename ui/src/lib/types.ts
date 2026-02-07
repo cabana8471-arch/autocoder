@@ -16,37 +16,36 @@ export interface ProjectSummary {
   has_spec: boolean
   stats: ProjectStats
   default_concurrency: number
-  is_detached: boolean  // True if Autocoder files moved to backup
+  is_detached: boolean
 }
 
 export interface ProjectDetail extends ProjectSummary {
   prompts_dir: string
 }
 
-// Detach/Reattach types
 export interface DetachResponse {
   success: boolean
   files_moved: number
   backup_size: number
   backup_path: string
   message: string
-  user_files_restored: number  // Always returned by backend
+  user_files_restored: number
 }
 
 export interface ReattachResponse {
   success: boolean
   files_restored: number
   message: string
-  conflicts: string[]  // Always returned by backend (empty array if none)
-  conflicts_backup_path: string | null  // null if no conflicts
+  conflicts: string[]
+  conflicts_backup_path: string | null
 }
 
 export interface DetachStatusResponse {
   is_detached: boolean
   backup_exists: boolean
-  backup_size?: number
-  detached_at?: string
-  file_count?: number
+  backup_size: number | null
+  detached_at: string | null
+  file_count: number | null
 }
 
 // Filesystem types

@@ -135,20 +135,13 @@ export async function resetProject(
   })
 }
 
-// ============================================================================
 // Detach/Reattach API
-// ============================================================================
-
 export async function detachProject(name: string): Promise<DetachResponse> {
-  return fetchJSON(`/projects/${encodeURIComponent(name)}/detach`, {
-    method: 'POST',
-  })
+  return fetchJSON(`/projects/${encodeURIComponent(name)}/detach`, { method: 'POST' })
 }
 
 export async function reattachProject(name: string): Promise<ReattachResponse> {
-  return fetchJSON(`/projects/${encodeURIComponent(name)}/reattach`, {
-    method: 'POST',
-  })
+  return fetchJSON(`/projects/${encodeURIComponent(name)}/reattach`, { method: 'POST' })
 }
 
 export async function getDetachStatus(name: string): Promise<DetachStatusResponse> {
