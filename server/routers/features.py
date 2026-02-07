@@ -25,7 +25,6 @@ from ..schemas import (
     FeatureResponse,
     FeatureUpdate,
 )
-from ..utils.project_helpers import get_project_path as _get_project_path
 from ..utils.validation import validate_project_name
 
 # Lazy imports to avoid circular dependencies

@@ -26,7 +26,6 @@ from ..schemas import (
     ScheduleResponse,
     ScheduleUpdate,
 )
-from ..utils.project_helpers import get_project_path as _get_project_path
 from ..utils.validation import validate_project_name
 
 if TYPE_CHECKING:
